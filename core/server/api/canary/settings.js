@@ -36,7 +36,8 @@ module.exports = {
         options: ['group'],
         permissions: true,
         query(frame) {
-            return settingsBREADService.browse(frame.options.context);
+            const result = settingsBREADService.browse(frame.options.context);
+            return result.filter(setting => setting.key !== 'mailgun_api_key');
         }
     },
 
