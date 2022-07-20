@@ -8,6 +8,8 @@ const membersService = require('../../services/members');
 const stripeService = require('../../services/stripe');
 const tpl = require('@tryghost/tpl');
 const settingsBREADService = settingsService.getSettingsBREADServiceInstance();
+const logging = require('@tryghost/logging');
+
 
 const messages = {
     failedSendingEmail: 'Failed Sending Email'
@@ -33,9 +35,34 @@ module.exports = {
     browse: {
         options: ['group'],
         permissions: true,
-        query(frame) {
+        async query(frame) {
+            logging.info('FRAME:');
+            logging.info(JSON.stringify(frame));
+            
+            let user = await models.User.findOne({id: frame.options.context.user}); // FIXME: don't make an extra query?
+
+            logging.info('user:');
+            logging.info(JSON.stringify(user));
+
+            let roles = JSON.parse(JSON.stringify(await user.roles().fetch())); // HACK: lol wut
+
+            logging.info('roles:');
+            logging.info(JSON.stringify(roles));
+
+            let canEmail = roles.some(({name}) => ['Owner', 'Administrator', 'Editor'].includes(name));
+
+            logging.info('canEmail:');
+            logging.info(JSON.stringify(canEmail));
+
             const result = settingsBREADService.browse(frame.options.context);
-            return result.filter(setting => setting.key !== 'mailgun_api_key');
+
+            // Prevent authors from sending emails.
+            if (canEmail) {
+                return result;
+            } else {
+                return result.filter(setting => setting.key !== 'mailgun_api_key');
+            }
+            
         }
     },
 
