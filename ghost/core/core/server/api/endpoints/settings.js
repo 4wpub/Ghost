@@ -36,19 +36,8 @@ module.exports = {
         options: ['group'],
         permissions: true,
         async query(frame) {
-            logging.info('FRAME:');
-            logging.info(JSON.stringify(frame));
-            
             let user = await models.User.findOne({id: frame.options.context.user}); // FIXME: don't make an extra query?
-
-            logging.info('user:');
-            logging.info(JSON.stringify(user));
-
             let roles = JSON.parse(JSON.stringify(await user.roles().fetch())); // HACK: lol wut
-
-            logging.info('roles:');
-            logging.info(JSON.stringify(roles));
-
             let canEmail = roles.some(({name}) => ['Owner', 'Administrator', 'Editor'].includes(name));
 
             logging.info('canEmail:');
@@ -58,8 +47,10 @@ module.exports = {
 
             // Prevent authors from sending emails.
             if (canEmail) {
+                logging.info('if canEmail');
                 return result;
             } else {
+                logging.info('else canEmail');
                 return result.filter(setting => setting.key !== 'mailgun_api_key');
             }
             
