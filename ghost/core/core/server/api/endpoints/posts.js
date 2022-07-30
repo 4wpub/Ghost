@@ -152,6 +152,16 @@ module.exports = {
             unsafeAttrs: unsafeAttrs
         },
         async query(frame) {
+            let user = await models.User.findOne({id: frame.options.context.user}); // FIXME: don't make an extra query?
+            let roles = JSON.parse(JSON.stringify(await user.roles().fetch())); // HACK: lol wut
+            let canEmail = roles.some(({name}) => ['Owner', 'Administrator', 'Editor'].includes(name));
+
+            // Prevent authors from sending emails.
+            if (!canEmail) {
+                delete frame.options?.newsletter;
+                delete frame.options?.email_segment;
+            }
+
             let model = await postsService.editPost(frame);
 
             this.headers.cacheInvalidate = postsService.handleCacheInvalidation(model);

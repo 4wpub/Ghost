@@ -9,6 +9,7 @@ const stripeService = require('../../services/stripe');
 const tpl = require('@tryghost/tpl');
 const settingsBREADService = settingsService.getSettingsBREADServiceInstance();
 
+
 const messages = {
     failedSendingEmail: 'Failed Sending Email'
 };
@@ -33,8 +34,20 @@ module.exports = {
     browse: {
         options: ['group'],
         permissions: true,
-        query(frame) {
-            return settingsBREADService.browse(frame.options.context);
+        async query(frame) {
+            let user = await models.User.findOne({id: frame.options.context.user}); // FIXME: don't make an extra query?
+            let roles = JSON.parse(JSON.stringify(await user.roles().fetch())); // HACK: lol wut
+            let canEmail = roles.some(({name}) => ['Owner', 'Administrator', 'Editor'].includes(name));
+
+            const result = settingsBREADService.browse(frame.options.context);
+
+            // Prevent authors from sending emails.
+            if (canEmail) {
+                return result;
+            } else {
+                return result.filter(setting => setting.key !== 'mailgun_api_key');
+            }
+
         }
     },
 
@@ -69,7 +82,7 @@ module.exports = {
         ],
         async query(frame) {
             await settingsBREADService.verifyKeyUpdate(frame.data.token);
-            
+
             // We need to return all settings here, because we have calculated settings that might change
             const browse = await settingsBREADService.browse(frame.options.context);
 
