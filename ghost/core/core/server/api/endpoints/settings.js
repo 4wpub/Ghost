@@ -8,7 +8,6 @@ const membersService = require('../../services/members');
 const stripeService = require('../../services/stripe');
 const tpl = require('@tryghost/tpl');
 const settingsBREADService = settingsService.getSettingsBREADServiceInstance();
-const logging = require('@tryghost/logging');
 
 
 const messages = {
@@ -40,20 +39,15 @@ module.exports = {
             let roles = JSON.parse(JSON.stringify(await user.roles().fetch())); // HACK: lol wut
             let canEmail = roles.some(({name}) => ['Owner', 'Administrator', 'Editor'].includes(name));
 
-            logging.info('canEmail:');
-            logging.info(JSON.stringify(canEmail));
-
             const result = settingsBREADService.browse(frame.options.context);
 
             // Prevent authors from sending emails.
             if (canEmail) {
-                logging.info('if canEmail');
                 return result;
             } else {
-                logging.info('else canEmail');
                 return result.filter(setting => setting.key !== 'mailgun_api_key');
             }
-            
+
         }
     },
 
@@ -88,7 +82,7 @@ module.exports = {
         ],
         async query(frame) {
             await settingsBREADService.verifyKeyUpdate(frame.data.token);
-            
+
             // We need to return all settings here, because we have calculated settings that might change
             const browse = await settingsBREADService.browse(frame.options.context);
 
