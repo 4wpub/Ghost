@@ -14,9 +14,16 @@
   ],
   "scripts": {
     "dev": "yarn workspace ghost run dev",
+    "fix:admin": "yarn cache clean && cd ghost/core/core/admin && rm -rf node_modules tmp dist && yarn && cd ../../../..",
+    "fix:backend": "yarn cache clean && rm -rf node_modules && yarn",
+    "fix": "yarn fix:admin && yarn fix:backend",
     "lint": "yarn workspaces run lint",
+    "setup": "yarn && yarn workspace ghost run setup",
     "start": "yarn workspace ghost run start",
-    "test": "yarn workspaces run test"
+    "test": "yarn workspaces run test",
+    "main": "yarn main:monorepo && yarn main:submodules",
+    "main:monorepo": "git checkout main && git pull ${GHOST_UPSTREAM:-origin} main && yarn && yarn workspace ghost run grunt subgrunt:init",
+    "main:submodules": "git submodule sync && git submodule update && git submodule foreach \"git checkout main && git pull ${GHOST_UPSTREAM:-origin} main && yarn\""
   },
   "resolutions": {
     "@tryghost/logging": "2.2.3",

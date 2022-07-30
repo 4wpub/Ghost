@@ -1,6 +1,7 @@
 const {promises: fs} = require('fs');
 const path = require('path');
 const moment = require('moment');
+const htmlToPlaintext = require('../../../shared/html-to-plaintext');
 
 class CommentsServiceEmails {
     constructor({config, logging, models, mailer, settingsCache, urlService, urlUtils}) {
@@ -48,7 +49,7 @@ class CommentsServiceEmails {
 
             const {html, text} = await this.renderEmailTemplate('new-comment', templateData);
 
-            this.sendMail({
+            await this.sendMail({
                 to,
                 subject,
                 html,
@@ -98,6 +99,56 @@ class CommentsServiceEmails {
         const {html, text} = await this.renderEmailTemplate('new-comment-reply', templateData);
 
         return this.sendMail({
+            to,
+            subject,
+            html,
+            text
+        });
+    }
+
+    /**
+     * Send an email to notify the owner of the site that a comment has been reported by a member
+     * @param {*} comment The comment model that has been reported
+     * @param {*} reporter The member object who reported this comment
+     */
+    async notifiyReport(comment, reporter) {
+        const post = await this.models.Post.findOne({id: comment.get('post_id')}, {withRelated: ['authors']});
+        const member = await this.models.Member.findOne({id: comment.get('member_id')});
+        const owner = await this.models.User.getOwnerUser();
+
+        // For now we only send the report to the owner
+        const to = owner.get('email');
+        const subject = '🚩 A comment has been reported on your post';
+
+        const memberName = member.get('name') || 'Anonymous';
+
+        const templateData = {
+            siteTitle: this.settingsCache.get('title'),
+            siteUrl: this.urlUtils.getSiteUrl(),
+            siteDomain: this.siteDomain,
+            postTitle: post.get('title'),
+            postUrl: this.urlService.getUrlByResourceId(post.get('id'), {absolute: true}),
+            commentHtml: comment.get('html'),
+            commentText: htmlToPlaintext.email(comment.get('html')),
+            commentDate: moment(comment.get('created_at')).tz(this.settingsCache.get('timezone')).format('D MMM YYYY'),
+            
+            reporterName: reporter.name,
+            reporterEmail: reporter.email,
+            reporter: reporter.name ? `${reporter.name} (${reporter.email})` : reporter.email,
+
+            memberName: memberName,
+            memberEmail: member.get('email'),
+            memberBio: member.get('bio'),
+            memberInitials: this.extractInitials(memberName),
+            accentColor: this.settingsCache.get('accent_color'),
+            fromEmail: this.notificationFromAddress,
+            toEmail: to,
+            staffUrl: `${this.urlUtils.getAdminUrl()}ghost/#/settings/staff/${owner.get('slug')}`
+        };
+
+        const {html, text} = await this.renderEmailTemplate('report', templateData);
+
+        await this.sendMail({
             to,
             subject,
             html,

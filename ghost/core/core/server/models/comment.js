@@ -2,7 +2,6 @@ const ghostBookshelf = require('./base');
 const _ = require('lodash');
 const errors = require('@tryghost/errors');
 const tpl = require('@tryghost/tpl');
-const commentsService = require('../services/comments');
 
 const messages = {
     commentNotFound: 'Comment could not be found',
@@ -70,14 +69,14 @@ const Comment = ghostBookshelf.Model.extend({
     onCreated: function onCreated(model, options) {
         ghostBookshelf.Model.prototype.onCreated.apply(this, arguments);
 
-        if (!options.context.internal) {
-            commentsService.api.sendNewCommentNotifications(model);
-        }
-
         model.emitChange('added', options);
     },
 
-    enforcedFilters: function enforcedFilters() {
+    enforcedFilters: function enforcedFilters(options) {
+        if (options.context && options.context.user) {
+            return null;
+        }
+
         return 'parent_id:null';
     }
 
@@ -151,7 +150,9 @@ const Comment = ghostBookshelf.Model.extend({
     defaultRelations: function defaultRelations(methodName, options) {
         // @todo: the default relations are not working for 'add' when we add it below
         if (['findAll', 'findPage', 'edit', 'findOne'].indexOf(methodName) !== -1) {
-            options.withRelated = _.union(['member', 'likes', 'replies', 'replies.member', 'replies.likes'], options.withRelated || []);
+            if (!options.withRelated || options.withRelated.length === 0) {
+                options.withRelated = ['member', 'likes', 'replies', 'replies.member', 'replies.likes'];
+            }
         }
 
         return options;
