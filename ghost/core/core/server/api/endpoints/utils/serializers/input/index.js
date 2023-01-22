@@ -3,6 +3,10 @@ module.exports = {
         return require('./db');
     },
 
+    get emails() {
+        return require('./emails');
+    },
+
     get integrations() {
         return require('./integrations');
     },
@@ -45,5 +49,9 @@ module.exports = {
 
     get webhooks() {
         return require('./webhooks');
+    },
+
+    get comments() {
+        return require('./comments');
     }
 };

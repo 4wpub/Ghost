@@ -20,9 +20,12 @@ const BACKUP_TABLES = [
     'webhooks',
     'tokens',
     'sessions',
+    'subscriptions',
     'mobiledoc_revisions',
+    'post_revisions',
     'email_batches',
     'email_recipients',
+    'email_recipient_failures',
     'members_cancel_events',
     'members_payment_events',
     'members_login_events',
@@ -31,11 +34,19 @@ const BACKUP_TABLES = [
     'members_paid_subscription_events',
     'members_subscribe_events',
     'members_product_events',
+    'members_created_events',
+    'members_subscription_created_events',
     'members_newsletters',
+    'mentions',
     'comments',
     'comment_likes',
     'comment_reports',
-    'jobs'
+    'jobs',
+    'redirects',
+    'members_click_events',
+    'members_feedback',
+    'suppressions',
+    'email_spam_complaint_events'
 ];
 
 // NOTE: exposing only tables which are going to be included in a "default" export file

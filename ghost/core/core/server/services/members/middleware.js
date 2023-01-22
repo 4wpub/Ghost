@@ -1,9 +1,18 @@
 const _ = require('lodash');
 const logging = require('@tryghost/logging');
 const membersService = require('./service');
+const emailSuppressionList = require('../email-suppression-list');
 const models = require('../../models');
 const urlUtils = require('../../../shared/url-utils');
+const spamPrevention = require('../../web/shared/middleware/api/spam-prevention');
 const {formattedMemberResponse} = require('./utils');
+const errors = require('@tryghost/errors');
+const tpl = require('@tryghost/tpl');
+
+const messages = {
+    missingUuid: 'Missing uuid.',
+    invalidUuid: 'Invalid uuid.'
+};
 
 // @TODO: This piece of middleware actually belongs to the frontend, not to the member app
 // Need to figure a way to separate these things (e.g. frontend actually talks to members API)
@@ -16,6 +25,38 @@ const loadMemberSession = async function (req, res, next) {
     } catch (err) {
         Object.assign(req, {member: null});
         next();
+    }
+};
+
+/**
+ * Require member authentication, and make it possible to authenticate via uuid.
+ * You can chain this after loadMemberSession to make it possible to authenticate via both the uuid and the session.
+ */
+const authMemberByUuid = async function (req, res, next) {
+    try {
+        const uuid = req.query.uuid;
+        if (!uuid) {
+            if (res.locals.member && req.member) {
+                // Already authenticated via session
+                return next();
+            }
+
+            throw new errors.UnauthorizedError({
+                messsage: tpl(messages.missingUuid)
+            });
+        }
+
+        const member = await membersService.api.memberBREADService.read({uuid});
+        if (!member) {
+            throw new errors.UnauthorizedError({
+                message: tpl(messages.invalidUuid)
+            });
+        }
+        Object.assign(req, {member});
+        res.locals.member = req.member;
+        next();
+    } catch (err) {
+        next(err);
     }
 };
 
@@ -36,7 +77,12 @@ const deleteSession = async function (req, res) {
         res.writeHead(204);
         res.end();
     } catch (err) {
-        res.writeHead(err.statusCode);
+        if (!err.statusCode) {
+            logging.error(err);
+        }
+        res.writeHead(err.statusCode ?? 500, {
+            'Content-Type': 'text/plain;charset=UTF-8'
+        });
         res.end(err.message);
     }
 };
@@ -52,6 +98,29 @@ const getMemberData = async function (req, res) {
     } catch (err) {
         res.writeHead(204);
         res.end();
+    }
+};
+
+const deleteSuppression = async function (req, res) {
+    try {
+        const member = await membersService.ssr.getMemberDataFromSession(req, res);
+        const options = {
+            id: member.id,
+            withRelated: ['newsletters']
+        };
+        await emailSuppressionList.removeEmail(member.email);
+        await membersService.api.members.update({subscribed: true}, options);
+
+        res.writeHead(204);
+        res.end();
+    } catch (err) {
+        if (!err.statusCode) {
+            logging.error(err);
+        }
+        res.writeHead(err.statusCode ?? 500, {
+            'Content-Type': 'text/plain;charset=UTF-8'
+        });
+        res.end(err.message);
     }
 };
 
@@ -116,21 +185,27 @@ const updateMemberNewsletters = async function (req, res) {
 
 const updateMemberData = async function (req, res) {
     try {
-        const data = _.pick(req.body, 'name', 'subscribed', 'newsletters', 'enable_comment_notifications');
+        const data = _.pick(req.body, 'name', 'expertise', 'subscribed', 'newsletters', 'enable_comment_notifications');
         const member = await membersService.ssr.getMemberDataFromSession(req, res);
         if (member) {
             const options = {
                 id: member.id,
                 withRelated: ['stripeSubscriptions', 'stripeSubscriptions.customer', 'stripeSubscriptions.stripePrice', 'newsletters']
             };
-            const updatedMember = await membersService.api.members.update(data, options);
+            await membersService.api.members.update(data, options);
+            const updatedMember = await membersService.ssr.getMemberDataFromSession(req, res);
 
-            res.json(formattedMemberResponse(updatedMember.toJSON()));
+            res.json(formattedMemberResponse(updatedMember));
         } else {
             res.json(null);
         }
     } catch (err) {
-        res.writeHead(err.statusCode);
+        if (!err.statusCode) {
+            logging.error(err);
+        }
+        res.writeHead(err.statusCode ?? 500, {
+            'Content-Type': 'text/plain;charset=UTF-8'
+        });
         res.end(err.message);
     }
 };
@@ -151,6 +226,8 @@ const createSessionFromMagicLink = async function (req, res, next) {
 
     try {
         const member = await membersService.ssr.exchangeTokenForSession(req, res);
+        spamPrevention.membersAuth().reset(req.ip, `${member.email}login`);
+        // Note: don't reset 'member_login', or that would give an easy way around user enumeration by logging in to a manually created account
         const subscriptions = member && member.subscriptions || [];
 
         const action = req.query.action;
@@ -209,11 +286,13 @@ const createSessionFromMagicLink = async function (req, res, next) {
 // Set req.member & res.locals.member if a cookie is set
 module.exports = {
     loadMemberSession,
+    authMemberByUuid,
     createSessionFromMagicLink,
     getIdentityToken,
     getMemberNewsletters,
     getMemberData,
     updateMemberData,
     updateMemberNewsletters,
-    deleteSession
+    deleteSession,
+    deleteSuppression
 };

@@ -3,7 +3,7 @@ const _ = require('lodash');
 const uuid = require('uuid');
 const crypto = require('crypto');
 const keypair = require('keypair');
-const ObjectID = require('bson-objectid');
+const ObjectID = require('bson-objectid').default;
 const ghostBookshelf = require('./base');
 const tpl = require('@tryghost/tpl');
 const errors = require('@tryghost/errors');
@@ -96,6 +96,10 @@ function getDefaultSettings() {
 Settings = ghostBookshelf.Model.extend({
 
     tableName: 'settings',
+
+    actionsCollectCRUD: true,
+    actionsResourceType: 'setting',
+    actionsExtraContext: ['key', 'group'],
 
     emitChange: function emitChange(event, options) {
         const eventToTrigger = 'settings' + '.' + event;

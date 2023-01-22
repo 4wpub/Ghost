@@ -4,10 +4,10 @@ module.exports = function (data) {
 
 Someone just replied to your comment on "${data.postTitle}"
 
-${data.postUrl}#ghost-comments-root
+${data.postUrl}#ghost-comments
 
 ---
 
 Sent to ${data.toEmail} from ${data.siteDomain}.
-You can manage your notification preferences at ${data.profileUrl}.`;
+You can unsubscribe from these notifications at ${data.profileUrl}.`;
 };

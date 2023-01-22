@@ -3,11 +3,11 @@ const SingleUseTokenProvider = require('../../../core/server/services/members/Si
 const settingsService = require('../../../core/server/services/settings/settings-service');
 const settingsCache = require('../../../core/shared/settings-cache');
 const {agentProvider, fixtureManager, mockManager, matchers} = require('../../utils/e2e-framework');
-const {stringMatching, anyEtag, anyUuid} = matchers;
+const {stringMatching, anyEtag, anyUuid, anyContentLength, anyContentVersion} = matchers;
 const models = require('../../../core/server/models');
 const {anyErrorId} = matchers;
 
-const CURRENT_SETTINGS_COUNT = 67;
+const CURRENT_SETTINGS_COUNT = 71;
 
 const settingsMatcher = {};
 
@@ -15,12 +15,23 @@ const publicHashSettingMatcher = {
     value: stringMatching(/[a-z0-9]{30}/)
 };
 
+const labsSettingMatcher = {
+    value: stringMatching(/\{[^\s]+\}/)
+};
+
 const matchSettingsArray = (length) => {
     const settingsArray = new Array(length).fill(settingsMatcher);
 
-    if (length > 25) {
-        // Item at index 25 is the public hash, which is always different
-        settingsArray[25] = publicHashSettingMatcher;
+    if (length > 26) {
+        // Added a setting that is alphabetically before 'public_hash'? then you need to increment this counter.
+        // Item at index x is the public hash, which is always different
+        settingsArray[26] = publicHashSettingMatcher;
+    }
+
+    if (length > 58) {
+        // Added a setting that is alphabetically before 'labs'? then you need to increment this counter.
+        // Item at index x is the lab settings, which changes as we add and remove features
+        settingsArray[58] = labsSettingMatcher;
     }
 
     return settingsArray;
@@ -54,7 +65,10 @@ describe('Settings API', function () {
                     settings: matchSettingsArray(CURRENT_SETTINGS_COUNT)
                 })
                 .matchHeaderSnapshot({
-                    etag: anyEtag
+                    etag: anyEtag,
+                    // Special rule for this test, as the labs setting changes a lot
+                    'content-length': anyContentLength,
+                    'content-version': anyContentVersion
                 });
         });
 
@@ -66,6 +80,7 @@ describe('Settings API', function () {
                     settings: matchSettingsArray(1)
                 })
                 .matchHeaderSnapshot({
+                    'content-version': anyContentVersion,
                     etag: anyEtag
                 });
         });
@@ -76,6 +91,7 @@ describe('Settings API', function () {
                 .expectStatus(200)
                 .matchBodySnapshot()
                 .matchHeaderSnapshot({
+                    'content-version': anyContentVersion,
                     etag: anyEtag
                 });
         });
@@ -165,6 +181,7 @@ describe('Settings API', function () {
                     settings: matchSettingsArray(CURRENT_SETTINGS_COUNT)
                 })
                 .matchHeaderSnapshot({
+                    'content-version': anyContentVersion,
                     etag: anyEtag
                 });
 
@@ -188,9 +205,12 @@ describe('Settings API', function () {
                     settings: matchSettingsArray(CURRENT_SETTINGS_COUNT)
                 })
                 .matchHeaderSnapshot({
-                    etag: anyEtag
+                    etag: anyEtag,
+                    // Special rule for this test, as the labs setting changes a lot
+                    'content-length': anyContentLength,
+                    'content-version': anyContentVersion
                 });
-            
+
             // Check returned WITH prefix
             const val = body.settings.find(setting => setting.key === 'icon');
             assert.ok(val);
@@ -213,7 +233,10 @@ describe('Settings API', function () {
                     settings: matchSettingsArray(CURRENT_SETTINGS_COUNT)
                 })
                 .matchHeaderSnapshot({
-                    etag: anyEtag
+                    etag: anyEtag,
+                    // Special rule for this test, as the labs setting changes a lot
+                    'content-length': anyContentLength,
+                    'content-version': anyContentVersion
                 })
                 .expect(({body}) => {
                     const emailVerificationRequired = body.settings.find(setting => setting.key === 'email_verification_required');
@@ -232,7 +255,10 @@ describe('Settings API', function () {
                     settings: matchSettingsArray(CURRENT_SETTINGS_COUNT)
                 })
                 .matchHeaderSnapshot({
-                    etag: anyEtag
+                    etag: anyEtag,
+                    // Special rule for this test, as the labs setting changes a lot
+                    'content-length': anyContentLength,
+                    'content-version': anyContentVersion
                 })
                 .expect(({body}) => {
                     const membersSupportAddress = body.settings.find(setting => setting.key === 'members_support_address');
@@ -243,11 +269,11 @@ describe('Settings API', function () {
                     });
                 });
 
-            mockManager.assert.sentEmailCount(1);  
+            mockManager.assert.sentEmailCount(1);
             mockManager.assert.sentEmail({
                 subject: 'Verify email address',
                 to: 'support@example.com'
-            });  
+            });
         });
 
         it('does not trigger email verification flow if members_support_address remains the same', async function () {
@@ -265,7 +291,10 @@ describe('Settings API', function () {
                     settings: matchSettingsArray(CURRENT_SETTINGS_COUNT)
                 })
                 .matchHeaderSnapshot({
-                    etag: anyEtag
+                    etag: anyEtag,
+                    // Special rule for this test, as the labs setting changes a lot
+                    'content-length': anyContentLength,
+                    'content-version': anyContentVersion
                 })
                 .expect(({body}) => {
                     const membersSupportAddress = body.settings.find(setting => setting.key === 'members_support_address');
@@ -280,7 +309,12 @@ describe('Settings API', function () {
 
     describe('verify key update', function () {
         it('can update members_support_address via token', async function () {
-            const token = await (new SingleUseTokenProvider(models.SingleUseToken, 24 * 60 * 60 * 1000)).create({key: 'members_support_address', value: 'support@example.com'});
+            const token = await (new SingleUseTokenProvider({
+                SingleUseTokenModel: models.SingleUseToken,
+                validityPeriod: 24 * 60 * 60 * 1000,
+                validityPeriodAfterUsage: 10 * 60 * 1000,
+                maxUsageCount: 1
+            })).create({key: 'members_support_address', value: 'support@example.com'});
             await agent.put('settings/verifications/')
                 .body({
                     token
@@ -290,17 +324,26 @@ describe('Settings API', function () {
                     settings: matchSettingsArray(CURRENT_SETTINGS_COUNT)
                 })
                 .matchHeaderSnapshot({
-                    etag: anyEtag
+                    etag: anyEtag,
+                    // Special rule for this test, as the labs setting changes a lot
+                    'content-length': anyContentLength,
+                    'content-version': anyContentVersion
                 })
                 .expect(({body}) => {
                     const membersSupportAddress = body.settings.find(setting => setting.key === 'members_support_address');
                     assert.strictEqual(membersSupportAddress.value, 'support@example.com');
                 });
+
             mockManager.assert.sentEmailCount(0);
         });
 
         it('cannot update invalid keys via token', async function () {
-            const token = await (new SingleUseTokenProvider(models.SingleUseToken, 24 * 60 * 60 * 1000)).create({key: 'members_support_address_invalid', value: 'support@example.com'});
+            const token = await (new SingleUseTokenProvider({
+                SingleUseTokenModel: models.SingleUseToken,
+                validityPeriod: 24 * 60 * 60 * 1000,
+                validityPeriodAfterUsage: 10 * 60 * 1000,
+                maxUsageCount: 1
+            })).create({key: 'members_support_address_invalid', value: 'support@example.com'});
             await agent.put('settings/verifications/')
                 .body({
                     token
@@ -314,6 +357,7 @@ describe('Settings API', function () {
                     ]
                 })
                 .matchHeaderSnapshot({
+                    'content-version': anyContentVersion,
                     etag: anyEtag
                 });
         });
@@ -326,6 +370,7 @@ describe('Settings API', function () {
                 .expectStatus(204)
                 .expectEmptyBody()
                 .matchHeaderSnapshot({
+                    'content-version': anyContentVersion,
                     etag: anyEtag
                 });
 
@@ -377,51 +422,8 @@ describe('Settings API', function () {
                     }]
                 })
                 .matchHeaderSnapshot({
+                    'content-version': anyContentVersion,
                     etag: anyEtag
-                });
-        });
-    });
-
-    // @TODO We can drop these tests once we removed the deprecated endpoints
-    describe('deprecated', function () {
-        it('can do updateMembersEmail', async function () {
-            await agent
-                .post('settings/members/email/')
-                .body({
-                    email: 'test@test.com',
-                    type: 'supportAddressUpdate'
-                })
-                .expectStatus(204)
-                .expectEmptyBody()
-                .matchHeaderSnapshot({
-                    etag: anyEtag
-                });
-
-            mockManager.assert.sentEmail({
-                subject: 'Verify email address',
-                to: 'test@test.com'
-            });
-        });
-        
-        it('can do validateMembersEmailUpdate', async function () {
-            const magicLink = await membersService.api.getMagicLink('test@test.com');
-            const magicLinkUrl = new URL(magicLink);
-            const token = magicLinkUrl.searchParams.get('token');
-
-            await agent
-                .get(`settings/members/email/?token=${token}&action=supportAddressUpdate`)
-                .expectStatus(302)
-                .expectEmptyBody()
-                .matchHeaderSnapshot();
-
-            // Assert that the setting is changed as a side effect
-            // NOTE: cannot use read here :/
-            await agent.get('settings/')
-                .expect(({body}) => {
-                    const fromAddress = body.settings.find((setting) => {
-                        return setting.key === 'members_support_address';
-                    });
-                    assert.equal(fromAddress.value, 'test@test.com');
                 });
         });
     });

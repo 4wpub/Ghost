@@ -19,22 +19,32 @@ describe('Members Service - utils', function () {
                 uuid: 'uuid-1',
                 email: 'jamie+1@example.com',
                 name: 'Jamie Larson',
+                expertise: null,
                 avatar_image: 'https://gravatar.com/avatar/7d8efd2c2a781111599a8cae293cf704?s=250&d=blank',
                 subscribed: true,
                 status: 'free',
                 extra: 'property',
-                enable_comment_notifications: true
+                enable_comment_notifications: true,
+                email_suppression: {
+                    suppressed: false,
+                    info: null
+                }
             });
             should(member1).deepEqual({
                 uuid: 'uuid-1',
                 email: 'jamie+1@example.com',
                 name: 'Jamie Larson',
+                expertise: null,
                 firstname: 'Jamie',
                 avatar_image: 'https://gravatar.com/avatar/7d8efd2c2a781111599a8cae293cf704?s=250&d=blank',
                 subscribed: true,
                 subscriptions: [],
                 paid: false,
-                enable_comment_notifications: true
+                enable_comment_notifications: true,
+                email_suppression: {
+                    suppressed: false,
+                    info: null
+                }
             });
         });
 
@@ -43,6 +53,7 @@ describe('Members Service - utils', function () {
                 uuid: 'uuid-1',
                 email: 'jamie+1@example.com',
                 name: 'Jamie Larson',
+                expertise: 'Hello world',
                 avatar_image: 'https://gravatar.com/avatar/7d8efd2c2a781111599a8cae293cf704?s=250&d=blank',
                 subscribed: true,
                 status: 'comped',
@@ -61,6 +72,7 @@ describe('Members Service - utils', function () {
                 uuid: 'uuid-1',
                 email: 'jamie+1@example.com',
                 name: 'Jamie Larson',
+                expertise: 'Hello world',
                 firstname: 'Jamie',
                 avatar_image: 'https://gravatar.com/avatar/7d8efd2c2a781111599a8cae293cf704?s=250&d=blank',
                 subscribed: true,

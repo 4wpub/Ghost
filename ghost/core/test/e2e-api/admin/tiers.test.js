@@ -5,6 +5,7 @@ const {
     mockManager,
     matchers
 } = require('../../utils/e2e-framework');
+const {anyContentVersion, anyEtag} = matchers;
 
 describe('Tiers API', function () {
     let agent;
@@ -94,7 +95,7 @@ describe('Tiers API', function () {
     });
 
     it('Can edit visibility', async function () {
-        const {body: {tiers: [tier]}} = await agent.get('/tiers/?type:paid&limit=1');
+        const {body: {tiers: [tier]}} = await agent.get('/tiers/?filter=type:paid&limit=1');
 
         const visibility = tier.visibility === 'none' ? 'public' : 'none';
 
@@ -109,5 +110,60 @@ describe('Tiers API', function () {
         const {body: {tiers: [updatedTier]}} = await agent.get(`/tiers/${tier.id}/`);
 
         assert(updatedTier.visibility === visibility, `The visibility of the Tier should have been updated to ${visibility}`);
+    });
+
+    it('Can save with trial_days as null', async function () {
+        const {body: {tiers: [tier]}} = await agent.get('/tiers/?limit=1');
+
+        await agent.put(`/tiers/${tier.id}/`)
+            .body({
+                tiers: [{
+                    trial_days: null
+                }]
+            })
+            .expectStatus(200);
+
+        const {body: {tiers: [updatedTier]}} = await agent.get(`/tiers/${tier.id}/`);
+
+        assert(updatedTier.trial_days === 0, `The trial_days should have been set to 0`);
+    });
+
+    it('Can edit tier properties and relations', async function () {
+        let {body: {tiers: [tier]}} = await agent.get('/tiers/?filter=type:paid&limit=1')
+            .expectStatus(200)
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .matchBodySnapshot({
+                tiers: Array(1).fill({
+                    id: matchers.anyObjectId,
+                    created_at: matchers.anyISODateTime,
+                    updated_at: matchers.anyISODateTime
+                })
+            });
+
+        await agent.put(`/tiers/${tier.id}/`)
+            .body({
+                tiers: [{
+                    description: 'Updated description',
+                    benefits: ['daily cat pictures', 'delicious avo toast']
+                }]
+            })
+            .expectStatus(200);
+
+        const {body: {tiers: [updatedTier]}} = await agent.get(`/tiers/${tier.id}/`)
+            .expectStatus(200)
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .matchBodySnapshot({
+                tiers: Array(1).fill({
+                    id: matchers.anyObjectId,
+                    created_at: matchers.anyISODateTime,
+                    updated_at: matchers.anyISODateTime
+                })
+            });
     });
 });

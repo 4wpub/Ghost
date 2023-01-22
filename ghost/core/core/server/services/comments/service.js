@@ -8,23 +8,77 @@ const messages = {
     memberNotFound: 'Unable to find member',
     likeNotFound: 'Unable to find like',
     alreadyLiked: 'This comment was liked already',
-    replyToReply: 'Can not reply to a reply'
+    replyToReply: 'Can not reply to a reply',
+    commentsNotEnabled: 'Comments are not enabled for this site.',
+    cannotCommentOnPost: 'You do not have permission to comment on this post.',
+    cannotEditComment: 'You do not have permission to edit comments'
 };
 
 class CommentsService {
-    constructor({config, logging, models, mailer, settingsCache, urlService, urlUtils}) {
-        this.config = config;
-        this.logging = logging;
+    constructor({config, logging, models, mailer, settingsCache, settingsHelpers, urlService, urlUtils, contentGating}) {
+        /** @private */
         this.models = models;
-        this.mailer = mailer;
+
+        /** @private */
         this.settingsCache = settingsCache;
-        this.urlService = urlService;
-        this.urlUtils = urlUtils;
+
+        /** @private */
+        this.contentGating = contentGating;
 
         const Emails = require('./emails');
-        this.emails = new Emails(this);
+        /** @private */
+        this.emails = new Emails({
+            config,
+            logging,
+            models,
+            mailer,
+            settingsCache,
+            settingsHelpers,
+            urlService,
+            urlUtils
+        });
     }
 
+    /**
+     * @returns {'off'|'all'|'paid'}
+     */
+    get enabled() {
+        const setting = this.settingsCache.get('comments_enabled');
+        if (setting === 'off' || setting === 'all' || setting === 'paid') {
+            return setting;
+        }
+        return 'off';
+    }
+
+    /** @private */
+    checkEnabled() {
+        if (this.enabled === 'off') {
+            throw new errors.MethodNotAllowedError({
+                message: tpl(messages.commentsNotEnabled)
+            });
+        }
+    }
+
+    /** @private */
+    checkCommentAccess(memberModel) {
+        if (this.enabled === 'paid' && memberModel.get('status') === 'free') {
+            throw new errors.NoPermissionError({
+                message: tpl(messages.cannotCommentOnPost)
+            });
+        }
+    }
+
+    /** @private */
+    checkPostAccess(postModel, memberModel) {
+        const access = this.contentGating.checkPostAccess(postModel.toJSON(), memberModel.toJSON());
+        if (access === this.contentGating.BLOCK_ACCESS) {
+            throw new errors.NoPermissionError({
+                message: tpl(messages.cannotCommentOnPost)
+            });
+        }
+    }
+
+    /** @private */
     async sendNewCommentNotifications(comment) {
         await this.emails.notifyPostAuthors(comment);
 
@@ -33,7 +87,60 @@ class CommentsService {
         }
     }
 
+    async likeComment(commentId, member, options = {}) {
+        this.checkEnabled();
+
+        const memberModel = await this.models.Member.findOne({
+            id: member.id
+        }, {
+            require: true,
+            ...options,
+            withRelated: ['products']
+        });
+
+        this.checkCommentAccess(memberModel);
+
+        const data = {
+            member_id: memberModel.id,
+            comment_id: commentId
+        };
+
+        const existing = await this.models.CommentLike.findOne(data, options);
+
+        if (existing) {
+            throw new errors.BadRequestError({
+                message: tpl(messages.alreadyLiked)
+            });
+        }
+
+        return await this.models.CommentLike.add(data, options);
+    }
+
+    async unlikeComment(commentId, member, options = {}) {
+        this.checkEnabled();
+
+        try {
+            await this.models.CommentLike.destroy({
+                ...options,
+                destroyBy: {
+                    member_id: member.id,
+                    comment_id: commentId
+                },
+                require: true
+            });
+        } catch (err) {
+            if (err instanceof this.models.CommentLike.NotFoundError) {
+                return Promise.reject(new errors.NotFoundError({
+                    message: tpl(messages.likeNotFound)
+                }));
+            }
+
+            throw err;
+        }
+    }
+
     async reportComment(commentId, reporter) {
+        this.checkEnabled();
         const comment = await this.models.Comment.findOne({id: commentId}, {require: true});
 
         // Check if this reporter already reported this comment (then don't send an email)?
@@ -57,10 +164,32 @@ class CommentsService {
     }
 
     /**
+     * @param {any} options
+     */
+    async getComments(options) {
+        this.checkEnabled();
+        const page = await this.models.Comment.findPage({...options, parentId: null});
+
+        return page;
+    }
+
+    /**
+     * @param {string} id - The ID of the Comment to get replies from
+     * @param {any} options
+     */
+    async getReplies(id, options) {
+        this.checkEnabled();
+        const page = await this.models.Comment.findPage({...options, parentId: id});
+
+        return page;
+    }
+
+    /**
      * @param {string} id - The ID of the Comment to get
      * @param {any} options
      */
     async getCommentByID(id, options) {
+        this.checkEnabled();
         const model = await this.models.Comment.findOne({id}, options);
 
         if (!model) {
@@ -79,12 +208,26 @@ class CommentsService {
      * @param {any} options
      */
     async commentOnPost(post, member, comment, options) {
-        await this.models.Member.findOne({
+        this.checkEnabled();
+        const memberModel = await this.models.Member.findOne({
             id: member
         }, {
             require: true,
-            ...options
+            ...options,
+            withRelated: ['products']
         });
+
+        this.checkCommentAccess(memberModel);
+
+        const postModel = await this.models.Post.findOne({
+            id: post
+        }, {
+            require: true,
+            ...options,
+            withRelated: ['tiers']
+        });
+
+        this.checkPostAccess(postModel, memberModel);
 
         const model = await this.models.Comment.add({
             post_id: post,
@@ -104,7 +247,8 @@ class CommentsService {
             commentId: model.id
         }));
 
-        return model;
+        // Instead of returning the model, fetch it again, so we have all the relations properly fetched
+        return await this.models.Comment.findOne({id: model.id}, {...options, require: true});
     }
 
     /**
@@ -114,12 +258,16 @@ class CommentsService {
      * @param {any} options
      */
     async replyToComment(parent, member, comment, options) {
-        await this.models.Member.findOne({
+        this.checkEnabled();
+        const memberModel = await this.models.Member.findOne({
             id: member
         }, {
             require: true,
-            ...options
+            ...options,
+            withRelated: ['products']
         });
+
+        this.checkCommentAccess(memberModel);
 
         const parentComment = await this.getCommentByID(parent, options);
         if (!parentComment) {
@@ -133,6 +281,15 @@ class CommentsService {
                 message: tpl(messages.replyToReply)
             });
         }
+        const postModel = await this.models.Post.findOne({
+            id: parentComment.get('post_id')
+        }, {
+            require: true,
+            ...options,
+            withRelated: ['tiers']
+        });
+
+        this.checkPostAccess(postModel, memberModel);
 
         const model = await this.models.Comment.add({
             post_id: parentComment.get('post_id'),
@@ -152,7 +309,8 @@ class CommentsService {
             commentId: model.id
         }));
 
-        return model;
+        // Instead of returning the model, fetch it again, so we have all the relations properly fetched
+        return await this.models.Comment.findOne({id: model.id}, {...options, require: true});
     }
 
     /**
@@ -161,6 +319,7 @@ class CommentsService {
      * @param {any} options
      */
     async deleteComment(id, member, options) {
+        this.checkEnabled();
         const existingComment = await this.getCommentByID(id, options);
 
         if (existingComment.get('member_id') !== member) {
@@ -188,6 +347,7 @@ class CommentsService {
      * @param {any} options
      */
     async editCommentContent(id, member, comment, options) {
+        this.checkEnabled();
         const existingComment = await this.getCommentByID(id, options);
 
         if (!comment) {
@@ -196,13 +356,13 @@ class CommentsService {
 
         if (existingComment.get('member_id') !== member) {
             throw new errors.NoPermissionError({
-                // todo fix message
-                message: tpl(messages.memberNotFound)
+                message: tpl(messages.cannotEditComment)
             });
         }
 
         const model = await this.models.Comment.edit({
-            html: comment
+            html: comment,
+            edited_at: new Date()
         }, {
             id,
             require: true,

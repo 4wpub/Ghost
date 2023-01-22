@@ -1,4 +1,5 @@
 const _ = require('lodash');
+const utils = require('../../..');
 const url = require('../utils/url');
 
 const commentFields = [
@@ -13,7 +14,16 @@ const memberFields = [
     'id',
     'uuid',
     'name',
-    'bio',
+    'expertise',
+    'avatar_image'
+];
+
+const memberFieldsAdmin = [
+    'id',
+    'uuid',
+    'name',
+    'email',
+    'expertise',
     'avatar_image'
 ];
 
@@ -24,21 +34,20 @@ const postFields = [
     'url'
 ];
 
+const countFields = [
+    'replies',
+    'likes'
+];
+
 const commentMapper = (model, frame) => {
     const jsonModel = model.toJSON ? model.toJSON(frame.options) : model;
 
     const response = _.pick(jsonModel, commentFields);
 
     if (jsonModel.member) {
-        response.member = _.pick(jsonModel.member, memberFields);
+        response.member = _.pick(jsonModel.member, utils.isMembersAPI(frame) ? memberFields : memberFieldsAdmin);
     } else {
         response.member = null;
-    }
-
-    if (jsonModel.likes) {
-        response.likes_count = jsonModel.likes.length;
-    } else {
-        response.likes_count = 0;
     }
 
     if (jsonModel.replies) {
@@ -50,18 +59,25 @@ const commentMapper = (model, frame) => {
     }
 
     if (jsonModel.post) {
-        // We could use the post mapper here, but we need less field + don't need al the async behaviour support
+        // We could use the post mapper here, but we need less field + don't need al the async behavior support
         url.forPost(jsonModel.post.id, jsonModel.post, frame);
         response.post = _.pick(jsonModel.post, postFields);
     }
 
-    // todo
-    response.liked = false;
-    if (jsonModel.likes && frame.original.context.member && frame.original.context.member.id) {
-        const id = frame.original.context.member.id;
-        response.liked = !!jsonModel.likes.find(l => l.member_id === id);
+    if (jsonModel.count && jsonModel.count.liked !== undefined) {
+        response.liked = jsonModel.count.liked > 0;
     }
 
+    if (jsonModel.count) {
+        response.count = _.pick(jsonModel.count, countFields);
+    }
+
+    if (utils.isMembersAPI(frame)) {
+        if (jsonModel.status !== 'published') {
+            response.html = null;
+        }
+    }
+    
     return response;
 };
 

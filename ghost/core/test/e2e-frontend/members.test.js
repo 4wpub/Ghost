@@ -20,15 +20,18 @@ function assertContentIsAbsent(res) {
     res.text.should.not.containEql('<h2 id="markdown">markdown</h2>');
 }
 
-describe('Front-end members behaviour', function () {
+describe('Front-end members behavior', function () {
     let request;
 
     async function loginAsMember(email) {
+        // Member should exist, because we are signin in
+        await models.Member.findOne({email}, {require: true});
+
         // membersService needs to be required after Ghost start so that settings
         // are pre-populated with defaults
         const membersService = require('../../core/server/services/members');
 
-        const signinLink = await membersService.api.getMagicLink(email);
+        const signinLink = await membersService.api.getMagicLink(email, 'signin');
         const signinURL = new URL(signinLink);
         // request needs a relative path rather than full url with host
         const signinPath = `${signinURL.pathname}${signinURL.search}`;
@@ -57,7 +60,9 @@ describe('Front-end members behaviour', function () {
 
             return originalSettingsCacheGetFn(key, options);
         });
-        await testUtils.startGhost();
+        await testUtils.startGhost({
+            copyThemes: true
+        });
         await testUtils.initFixtures('newsletters', 'members:newsletters');
 
         request = supertest.agent(configUtils.config.get('url'));
@@ -126,6 +131,23 @@ describe('Front-end members behaviour', function () {
                 .expect(400);
         });
 
+        it('should error for invalid subscription id on members create update session endpoint', async function () {
+            const membersService = require('../../core/server/services/members');
+            const email = 'test-member-create-update-session@email.com';
+            await membersService.api.members.create({email});
+            const token = await membersService.api.getMemberIdentityToken(email);
+            await request.post('/members/api/create-stripe-update-session')
+                .send({
+                    identity: token,
+                    subscription_id: 'invalid'
+                })
+                .expect(404)
+                .expect('Content-Type', 'text/plain;charset=UTF-8')
+                .expect((res) => {
+                    res.text.should.eql('Could not find subscription invalid');
+                });
+        });
+
         it('should error for invalid data on members subscription endpoint', async function () {
             await request.put('/members/api/subscriptions/123')
                 .expect(400);
@@ -165,6 +187,10 @@ describe('Front-end members behaviour', function () {
             getJsonResponse.newsletters.should.have.length(1);
 
             // Can update newsletter subscription
+            const originalNewsletters = getJsonResponse.newsletters;
+            const originalNewsletterName = originalNewsletters[0].name;
+            originalNewsletters[0].name = 'cannot change me';
+
             const res = await request.put(`/members/api/member/newsletters?uuid=${memberUUID}`)
                 .send({
                     newsletters: []
@@ -176,6 +202,48 @@ describe('Front-end members behaviour', function () {
             jsonResponse.should.have.properties(['email', 'uuid', 'status', 'name', 'newsletters']);
             jsonResponse.should.not.have.property('id');
             jsonResponse.newsletters.should.have.length(0);
+
+            const resRestored = await request.put(`/members/api/member/newsletters?uuid=${memberUUID}`)
+                .send({
+                    newsletters: originalNewsletters
+                })
+                .expect(200);
+
+            const restoreJsonResponse = resRestored.body;
+            should.exist(restoreJsonResponse);
+            restoreJsonResponse.should.have.properties(['email', 'uuid', 'status', 'name', 'newsletters']);
+            restoreJsonResponse.should.not.have.property('id');
+            restoreJsonResponse.newsletters.should.have.length(1);
+            // @NOTE: this seems like too much exposed information, needs a review
+            restoreJsonResponse.newsletters[0].should.have.properties([
+                'id',
+                'uuid',
+                'name',
+                'description',
+                'feedback_enabled',
+                'slug',
+                'sender_name',
+                'sender_email',
+                'sender_reply_to',
+                'status',
+                'visibility',
+                'subscribe_on_signup',
+                'sort_order',
+                'header_image',
+                'show_header_icon',
+                'show_header_title',
+                'title_font_category',
+                'title_alignment',
+                'show_feature_image',
+                'body_font_category',
+                'footer_content',
+                'show_badge',
+                'show_header_name',
+                'created_at',
+                'updated_at'
+            ]);
+
+            should.equal(restoreJsonResponse.newsletters[0].name, originalNewsletterName);
         });
 
         it('should serve theme 404 on members endpoint', async function () {
@@ -392,11 +460,14 @@ describe('Front-end members behaviour', function () {
         describe('as paid member', function () {
             const email = 'paid@test.com';
             before(async function () {
+                // Member should exist, because we are signin in
+                await models.Member.findOne({email}, {require: true});
+
                 // membersService needs to be required after Ghost start so that settings
                 // are pre-populated with defaults
                 const membersService = require('../../core/server/services/members');
 
-                const signinLink = await membersService.api.getMagicLink(email);
+                const signinLink = await membersService.api.getMagicLink(email, 'signin');
                 const signinURL = new URL(signinLink);
                 // request needs a relative path rather than full url with host
                 const signinPath = `${signinURL.pathname}${signinURL.search}`;

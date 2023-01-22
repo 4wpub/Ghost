@@ -3,7 +3,7 @@ const Promise = require('bluebird');
 const debug = require('@tryghost/debug')('mega');
 const tpl = require('@tryghost/tpl');
 const moment = require('moment');
-const ObjectID = require('bson-objectid');
+const ObjectID = require('bson-objectid').default;
 const errors = require('@tryghost/errors');
 const logging = require('@tryghost/logging');
 const settingsCache = require('../../../shared/settings-cache');
@@ -15,6 +15,7 @@ const db = require('../../data/db');
 const models = require('../../models');
 const postEmailSerializer = require('./post-email-serializer');
 const {getSegmentsFromHtml} = require('./segment-parser');
+const labs = require('../../../shared/labs');
 
 // Used to listen to email.added and email.edited model events originally, I think to offload this - ideally would just use jobs now if possible
 const events = require('../../lib/common/events');
@@ -49,9 +50,15 @@ const getReplyToAddress = (fromAddress, replyAddressOption) => {
  *
  * @param {Object} postModel - post model instance
  * @param {Object} options
+ * @param {Object} options
  */
 const getEmailData = async (postModel, options) => {
-    let newsletter = await postModel.getLazyRelation('newsletter');
+    let newsletter;
+    if (options.newsletterSlug) {
+        newsletter = await models.Newsletter.findOne({slug: options.newsletterSlug});
+    } else {
+        newsletter = await postModel.getLazyRelation('newsletter');
+    }
     if (!newsletter) {
         // The postModel doesn't have a newsletter in test emails
         newsletter = await models.Newsletter.getDefaultNewsletter();
@@ -69,6 +76,7 @@ const getEmailData = async (postModel, options) => {
     }
 
     return {
+        post: postModel.toJSON(), // for content paywalling
         subject,
         html,
         plaintext,
@@ -83,13 +91,10 @@ const getEmailData = async (postModel, options) => {
  * @param {[string]} toEmails - member email addresses to send email to
  * @param {ValidMemberSegment} [memberSegment]
  */
-const sendTestEmail = async (postModel, toEmails, memberSegment) => {
-    let emailData = await getEmailData(postModel);
+const sendTestEmail = async (postModel, toEmails, memberSegment, newsletterSlug) => {
+    let emailData = await getEmailData(postModel, {isTestEmail: true, newsletterSlug});
     emailData.subject = `[Test] ${emailData.subject}`;
 
-    if (memberSegment) {
-        emailData = postEmailSerializer.renderEmailForSegment(emailData, memberSegment);
-    }
     // fetch any matching members so that replacements use expected values
     const recipients = await Promise.all(toEmails.map(async (email) => {
         const member = await membersService.api.members.get({email});
@@ -106,10 +111,10 @@ const sendTestEmail = async (postModel, toEmails, memberSegment) => {
         };
     }));
 
-    // enable tracking for previews to match real-world behaviour
+    // enable tracking for previews to match real-world behavior
     emailData.track_opens = !!settingsCache.get('email_track_opens');
 
-    const response = await bulkEmailService.send(emailData, recipients);
+    const response = await bulkEmailService.send(emailData, recipients, memberSegment);
 
     if (response instanceof bulkEmailService.FailedBatch) {
         return Promise.reject(response.error);
@@ -186,7 +191,7 @@ const addEmail = async (postModel, options) => {
         await limitService.errorIfWouldGoOverLimit('emails');
     }
 
-    if (settingsCache.get('email_verification_required') === true) {
+    if (await membersService.verificationTrigger.checkVerificationRequired()) {
         throw new errors.HostLimitError({
             message: tpl(messages.emailSendingDisabled)
         });
@@ -238,9 +243,13 @@ const addEmail = async (postModel, options) => {
             from: emailData.from,
             reply_to: emailData.replyTo,
             html: emailData.html,
+            source: emailData.html,
+            source_type: 'html',
             plaintext: emailData.plaintext,
             submitted_at: moment().toDate(),
             track_opens: !!settingsCache.get('email_track_opens'),
+            track_clicks: !!settingsCache.get('email_track_clicks'),
+            feedback_enabled: !!newsletter.get('feedback_enabled'),
             recipient_filter: emailRecipientFilter,
             newsletter_id: newsletter.id
         }, knexOptions);
@@ -265,6 +274,10 @@ const retryFailedEmail = async (emailModel) => {
 };
 
 async function pendingEmailHandler(emailModel, options) {
+    if (labs.isSet('emailStability')) {
+        return;
+    }
+
     // CASE: do not send email if we import a database
     // TODO: refactor post.published events to never fire on importing
     if (options && options.importing) {
@@ -283,13 +296,14 @@ async function pendingEmailHandler(emailModel, options) {
     if (!process.env.NODE_ENV.startsWith('test')) {
         return jobsService.addJob({
             job: sendEmailJob,
-            data: {emailModel},
+            data: {emailId: emailModel.id},
             offloaded: false
         });
     }
 }
 
-async function sendEmailJob({emailModel, options}) {
+async function sendEmailJob({emailId, options}) {
+    logging.info('[sendEmailJob] Started for ' + emailId);
     let startEmailSend = null;
 
     try {
@@ -304,26 +318,78 @@ async function sendEmailJob({emailModel, options}) {
             await limitService.errorIfWouldGoOverLimit('emails');
         }
 
+        // Check email verification required
+        // We need to check this inside the job again
+        if (await membersService.verificationTrigger.checkVerificationRequired()) {
+            throw new errors.HostLimitError({
+                message: tpl(messages.emailSendingDisabled)
+            });
+        }
+
+        // Check if the email is still pending. And set the status to submitting in one transaction.
+        let hasSingleAccess = false;
+        let emailModel;
+        await models.Base.transaction(async (transacting) => {
+            const knexOptions = {...options, transacting, forUpdate: true};
+            emailModel = await models.Email.findOne({id: emailId}, knexOptions);
+
+            if (!emailModel) {
+                throw new errors.IncorrectUsageError({
+                    message: 'Provided email id does not match a known email record',
+                    context: {
+                        id: emailId
+                    }
+                });
+            }
+
+            if (emailModel.get('status') !== 'pending') {
+                // We don't throw this, because we don't want to mark this email as failed
+                logging.error(new errors.IncorrectUsageError({
+                    message: 'Emails can only be processed when in the "pending" state',
+                    context: `Email "${emailId}" has state "${emailModel.get('status')}"`,
+                    code: 'EMAIL_NOT_PENDING'
+                }));
+                return;
+            }
+
+            await emailModel.save({status: 'submitting'}, Object.assign({}, knexOptions, {patch: true}));
+            hasSingleAccess = true;
+        });
+
+        if (!hasSingleAccess || !emailModel) {
+            return;
+        }
+
         // Create email batch and recipient rows unless this is a retry and they already exist
         const existingBatchCount = await emailModel.related('emailBatches').count('id');
 
         if (existingBatchCount === 0) {
-            let newBatchCount;
+            logging.info('[sendEmailJob] Creating new batches for ' + emailId);
+            let newBatchCount = 0;
 
             await models.Base.transaction(async (transacting) => {
-                newBatchCount = await createSegmentedEmailBatches({emailModel, options: {transacting}});
+                const emailBatches = await createSegmentedEmailBatches({emailModel, options: {transacting}});
+                newBatchCount = emailBatches.length;
             });
 
             if (newBatchCount === 0) {
+                logging.info('[sendEmailJob] No batches created for ' + emailId);
+                await emailModel.save({status: 'submitted'}, {patch: true});
                 return;
             }
         }
 
         debug('sendEmailJob: sending email');
         startEmailSend = Date.now();
-        await bulkEmailService.processEmail({emailId: emailModel.get('id'), options});
+        await bulkEmailService.processEmail({emailModel, options});
         debug(`sendEmailJob: sent email (${Date.now() - startEmailSend}ms)`);
     } catch (error) {
+        if (startEmailSend) {
+            logging.info(`[sendEmailJob] Failed sending ${emailId} (${Date.now() - startEmailSend}ms)`);
+        } else {
+            logging.info(`[sendEmailJob] Failed sending ${emailId}`);
+        }
+
         if (startEmailSend) {
             debug(`sendEmailJob: send email failed (${Date.now() - startEmailSend}ms)`);
         }
@@ -333,10 +399,10 @@ async function sendEmailJob({emailModel, options}) {
             errorMessage = errorMessage.substring(0, 2000);
         }
 
-        await emailModel.save({
+        await models.Email.edit({
             status: 'failed',
             error: errorMessage
-        }, {patch: true});
+        }, {id: emailId});
 
         throw new errors.InternalServerError({
             err: error,
@@ -425,6 +491,8 @@ function partitionMembersBySegment(memberRows, segments) {
  * @param {Object} options
  * @param {Object} options.emailModel - instance of Email model
  * @param {Object} options.options - knex options
+ *
+ * @returns {Promise<string[]>}
  */
 async function createSegmentedEmailBatches({emailModel, options}) {
     let memberRows = await getEmailMemberRows({emailModel, options});
@@ -446,11 +514,11 @@ async function createSegmentedEmailBatches({emailModel, options}) {
                 memberSegment: partition === 'unsegmented' ? null : partition,
                 options
             });
-            batchIds.push(emailBatchIds);
+            batchIds.push(...emailBatchIds);
         }
     } else {
         const emailBatchIds = await createEmailBatches({emailModel, memberRows, options});
-        batchIds.push(emailBatchIds);
+        batchIds.push(...emailBatchIds);
     }
 
     return batchIds;
@@ -508,26 +576,34 @@ async function createEmailBatches({emailModel, memberRows, memberSegment, option
 
     debug('createEmailBatches: storing recipient list');
     const startOfRecipientStorage = Date.now();
-    const batches = _.chunk(memberRows, bulkEmailService.BATCH_SIZE);
+    let rowsToBatch = memberRows;
+    const batches = _.chunk(rowsToBatch, bulkEmailService.BATCH_SIZE);
     const batchIds = await Promise.mapSeries(batches, storeRecipientBatch);
     debug(`createEmailBatches: stored recipient list (${Date.now() - startOfRecipientStorage}ms)`);
+    logging.info(`[createEmailBatches] stored recipient list (${Date.now() - startOfRecipientStorage}ms)`);
 
     return batchIds;
 }
 
-const statusChangedHandler = (emailModel, options) => {
+const statusChangedHandler = async (emailModel, options) => {
     const emailRetried = emailModel.wasChanged()
         && emailModel.get('status') === 'pending'
         && emailModel.previous('status') === 'failed';
 
     if (emailRetried) {
-        pendingEmailHandler(emailModel, options);
+        await pendingEmailHandler(emailModel, options);
     }
 };
 
 function listen() {
-    events.on('email.added', pendingEmailHandler);
-    events.on('email.edited', statusChangedHandler);
+    events.on('email.added', (emailModel, options) => pendingEmailHandler(emailModel, options).catch((e) => {
+        logging.error('Error in email.added event handler');
+        logging.error(e);
+    }));
+    events.on('email.edited', (emailModel, options) => statusChangedHandler(emailModel, options).catch((e) => {
+        logging.error('Error in email.edited event handler');
+        logging.error(e);
+    }));
 }
 
 // Public API

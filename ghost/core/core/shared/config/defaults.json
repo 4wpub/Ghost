@@ -23,6 +23,12 @@
     "adapters": {
         "sso": {
             "active": "Default"
+        },
+        "cache": {
+            "active": "Memory",
+            "settings": {},
+            "imageSizes": {},
+            "gscan": {}
         }
     },
     "storage": {
@@ -45,6 +51,7 @@
     },
     "logging": {
         "level": "info",
+        "useLocalTime": false,
         "rotation": {
             "enabled": false,
             "period": "1d",
@@ -52,11 +59,7 @@
         },
         "transports": [
             "stdout"
-        ],
-        "slowHelper": {
-            "level": "warn",
-            "threshold": 200
-        }
+        ]
     },
     "spam": {
         "user_login": {
@@ -93,11 +96,20 @@
             "maxWait": 86400000,
             "lifetime": 3600,
             "freeRetries": 99
+        },
+        "member_login": {
+            "minWait": 600000,
+            "maxWait": 43200000,
+            "lifetime": 43200,
+            "freeRetries": 8
         }
     },
     "caching": {
         "frontend": {
             "maxAge": 0
+        },
+        "publicAssets": {
+            "maxAge": 31536000
         },
         "301": {
             "maxAge": 31536000
@@ -111,11 +123,35 @@
         "sitemap": {
             "maxAge": 3600
         },
+        "sitemapXSL": {
+            "maxAge": 86400
+        },
         "robotstxt": {
-            "maxAge": 3600000
+            "maxAge": 3600
+        },
+        "wellKnown": {
+            "maxAge": 86400
         },
         "cors": {
             "maxAge": 86400
+        },
+        "contentAPI": {
+            "maxAge": 0
+        },
+        "commentsCountAPI": {
+            "maxAge": 0
+        }
+    },
+    "optimization": {
+        "getHelper": {
+            "timeout": {
+                "threshold": 5000,
+                "level": "error"
+            },
+            "notify": {
+                "threshold": 200,
+                "level": "warn"
+            }
         }
     },
     "imageOptimization": {
@@ -133,24 +169,25 @@
         "emailAnalytics": true
     },
     "portal": {
-        "url": "https://cdn.jsdelivr.net/npm/@tryghost/portal@~{version}/umd/portal.min.js",
-        "version": "2.3"
+        "url": "https://cdn.jsdelivr.net/ghost/portal@~{version}/umd/portal.min.js",
+        "version": "2.24"
     },
     "sodoSearch": {
-        "url": "https://cdn.jsdelivr.net/npm/@tryghost/sodo-search@~{version}/umd/sodo-search.min.js",
-        "styles": "https://cdn.jsdelivr.net/npm/@tryghost/sodo-search@~{version}/umd/main.css",
+        "url": "https://cdn.jsdelivr.net/ghost/sodo-search@~{version}/umd/sodo-search.min.js",
+        "styles": "https://cdn.jsdelivr.net/ghost/sodo-search@~{version}/umd/main.css",
         "version": "1.1"
     },
     "comments": {
-        "url": "https://cdn.jsdelivr.net/npm/@tryghost/comments-ui@~{version}/umd/comments-ui.min.js",
-        "styles": "https://cdn.jsdelivr.net/npm/@tryghost/comments-ui@~{version}/umd/main.css",
-        "version": "0.2"
+        "url": "https://cdn.jsdelivr.net/ghost/comments-ui@~{version}/umd/comments-ui.min.js",
+        "styles": "https://cdn.jsdelivr.net/ghost/comments-ui@~{version}/umd/main.css",
+        "version": "0.12"
     },
     "editor": {
-        "url": ""
+        "url": "https://unpkg.com/@tryghost/koenig-lexical@~{version}/dist/koenig-lexical.umd.js",
+        "version": "0.0"
     },
     "tenor": {
-        "publicReadOnlyApiKey": null,
+        "googleApiKey": null,
         "contentFilter": "off"
     },
     "opensea": {

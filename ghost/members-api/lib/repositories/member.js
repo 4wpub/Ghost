@@ -3,19 +3,22 @@ const errors = require('@tryghost/errors');
 const logging = require('@tryghost/logging');
 const tpl = require('@tryghost/tpl');
 const DomainEvents = require('@tryghost/domain-events');
-const {SubscriptionCreatedEvent, MemberSubscribeEvent} = require('@tryghost/member-events');
-const ObjectId = require('bson-objectid');
+const {MemberCreatedEvent, SubscriptionCreatedEvent, MemberSubscribeEvent, SubscriptionCancelledEvent} = require('@tryghost/member-events');
+const ObjectId = require('bson-objectid').default;
 const {NotFoundError} = require('@tryghost/errors');
+const validator = require('@tryghost/validator');
 
 const messages = {
     noStripeConnection: 'Cannot {action} without a Stripe Connection',
     moreThanOneProduct: 'A member cannot have more than one Product',
-    existingSubscriptions: 'Cannot modify Products for a Member with active Subscriptions',
+    addProductWithActiveSubscription: 'Cannot add comped Products to a Member with active Subscriptions',
+    deleteProductWithActiveSubscription: 'Cannot delete a non-comped Product from a Member, because it has an active Subscription for the same product',
     memberNotFound: 'Could not find Member {id}',
     subscriptionNotFound: 'Could not find Subscription {id}',
     productNotFound: 'Could not find Product {id}',
     bulkActionRequiresFilter: 'Cannot perform {action} without a filter or all=true',
-    tierArchived: 'Cannot use archived Tiers'
+    tierArchived: 'Cannot use archived Tiers',
+    invalidEmail: 'Invalid Email'
 };
 
 /**
@@ -27,8 +30,9 @@ module.exports = class MemberRepository {
     /**
      * @param {object} deps
      * @param {any} deps.Member
+     * @param {any} deps.MemberNewsletter
      * @param {any} deps.MemberCancelEvent
-     * @param {any} deps.MemberSubscribeEvent
+     * @param {any} deps.MemberSubscribeEventModel
      * @param {any} deps.MemberEmailChangeEvent
      * @param {any} deps.MemberPaidSubscriptionEvent
      * @param {any} deps.MemberStatusEvent
@@ -45,8 +49,9 @@ module.exports = class MemberRepository {
      */
     constructor({
         Member,
+        MemberNewsletter,
         MemberCancelEvent,
-        MemberSubscribeEvent,
+        MemberSubscribeEventModel,
         MemberEmailChangeEvent,
         MemberPaidSubscriptionEvent,
         MemberStatusEvent,
@@ -62,8 +67,9 @@ module.exports = class MemberRepository {
         newslettersService
     }) {
         this._Member = Member;
+        this._MemberNewsletter = MemberNewsletter;
         this._MemberCancelEvent = MemberCancelEvent;
-        this._MemberSubscribeEvent = MemberSubscribeEvent;
+        this._MemberSubscribeEvent = MemberSubscribeEventModel;
         this._MemberEmailChangeEvent = MemberEmailChangeEvent;
         this._MemberPaidSubscriptionEvent = MemberPaidSubscriptionEvent;
         this._MemberStatusEvent = MemberStatusEvent;
@@ -90,12 +96,48 @@ module.exports = class MemberRepository {
         });
     }
 
+    dispatchEvent(event, options) {
+        if (options?.transacting) {
+            // Only dispatch the event after the transaction has finished
+            options.transacting.executionPromise.then(async () => {
+                DomainEvents.dispatch(event);
+            }).catch(() => {
+                // catches transaction errors/rollback to not dispatch event
+            });
+        } else {
+            DomainEvents.dispatch(event);
+        }
+    }
+
     isActiveSubscriptionStatus(status) {
         return ['active', 'trialing', 'unpaid', 'past_due'].includes(status);
     }
 
     isComplimentarySubscription(subscription) {
         return subscription.plan && subscription.plan.nickname && subscription.plan.nickname.toLowerCase() === 'complimentary';
+    }
+
+    /**
+     * Maps the framework context to members_*.source table record value
+     * @param {Object} context instance of ghost framework context object
+     * @returns {'import' | 'system' | 'api' | 'admin' | 'member'}
+     */
+    _resolveContextSource(context) {
+        let source;
+
+        if (context.import || context.importer) {
+            source = 'import';
+        } else if (context.internal) {
+            source = 'system';
+        } else if (context.api_key) {
+            source = 'api';
+        } else if (context.user) {
+            source = 'admin';
+        } else {
+            source = 'member';
+        }
+
+        return source;
     }
 
     getMRR({interval, amount, status = null, canceled = false, discount = null}) {
@@ -167,12 +209,35 @@ module.exports = class MemberRepository {
         }, options);
     }
 
+    /**
+     * Create a member
+     * @param {Object} data
+     * @param {string} data.email
+     * @param {string} [data.name]
+     * @param {string} [data.note]
+     * @param {(string|Object)[]} [data.labels]
+     * @param {boolean} [data.subscribed] (deprecated)
+     * @param {string} [data.geolocation]
+     * @param {Date} [data.created_at]
+     * @param {Object[]} [data.products]
+     * @param {Object[]} [data.newsletters]
+     * @param {Object} [data.stripeCustomer]
+     * @param {string} [data.offerId]
+     * @param {import('@tryghost/member-attribution/lib/attribution').AttributionResource} [data.attribution]
+     * @param {*} options
+     * @returns
+     */
     async create(data, options) {
         if (!options) {
             options = {};
         }
 
-        const {labels} = data;
+        if (!options.batch_id) {
+            // We'll use this to link related events
+            options.batch_id = ObjectId().toHexString();
+        }
+
+        const {labels, stripeCustomer, offerId, attribution} = data;
 
         if (labels) {
             labels.forEach((label, index) => {
@@ -183,6 +248,14 @@ module.exports = class MemberRepository {
         }
 
         const memberData = _.pick(data, ['email', 'name', 'note', 'subscribed', 'geolocation', 'created_at', 'products', 'newsletters']);
+
+        // Throw error if email is invalid using latest validator
+        if (!validator.isEmail(memberData.email, {legacy: false})) {
+            throw new errors.ValidationError({
+                message: tpl(messages.invalidEmail),
+                property: 'email'
+            });
+        }
 
         if (memberData.products && memberData.products.length > 1) {
             throw new errors.BadRequestError({message: tpl(messages.moreThanOneProduct)});
@@ -234,19 +307,7 @@ module.exports = class MemberRepository {
         }
 
         const context = options && options.context || {};
-        let source;
-
-        if (context.import || context.importer) {
-            source = 'import';
-        } else if (context.internal) {
-            source = 'system';
-        } else if (context.user) {
-            source = 'admin';
-        } else if (context.api_key) {
-            source = 'api';
-        } else {
-            source = 'member';
-        }
+        const source = this._resolveContextSource(context);
 
         const eventData = _.pick(data, ['created_at']);
 
@@ -274,11 +335,45 @@ module.exports = class MemberRepository {
         }
 
         if (newsletters && newsletters.length > 0) {
-            DomainEvents.dispatch(MemberSubscribeEvent.create({
+            this.dispatchEvent(MemberSubscribeEvent.create({
                 memberId: member.id,
                 source: source
-            }, eventData.created_at));
+            }, eventData.created_at), options);
         }
+
+        // For paid members created via stripe checkout webhook event, link subscription
+        if (stripeCustomer) {
+            await this.upsertCustomer({
+                member_id: member.id,
+                customer_id: stripeCustomer.id,
+                name: stripeCustomer.name,
+                email: stripeCustomer.email
+            });
+
+            for (const subscription of stripeCustomer.subscriptions.data) {
+                try {
+                    await this.linkSubscription({
+                        id: member.id,
+                        subscription,
+                        offerId,
+                        attribution
+                    }, {batch_id: options.batch_id});
+                } catch (err) {
+                    if (err.code !== 'ER_DUP_ENTRY' && err.code !== 'SQLITE_CONSTRAINT') {
+                        throw err;
+                    }
+                    throw new errors.ConflictError({
+                        err
+                    });
+                }
+            }
+        }
+        this.dispatchEvent(MemberCreatedEvent.create({
+            memberId: member.id,
+            batchId: options.batch_id,
+            attribution: data.attribution,
+            source
+        }, eventData.created_at), options);
 
         return member;
     }
@@ -319,8 +414,14 @@ module.exports = class MemberRepository {
             'newsletters',
             'enable_comment_notifications',
             'last_seen_at',
-            'last_commented_at'
+            'last_commented_at',
+            'expertise'
         ]);
+
+        // Trim whitespaces from expertise
+        if (memberData.expertise) {
+            memberData.expertise = memberData.expertise.trim();
+        }
 
         // Determine if we need to fetch the initial member with relations
         const needsProducts = this._stripeAPIService.configured && data.products;
@@ -340,12 +441,24 @@ module.exports = class MemberRepository {
         if (requiredRelations.length > 0) {
             initialMember = await this._Member.findOne({
                 id: options.id
-            }, {...sharedOptions, withRelated: requiredRelations});
+            }, {...sharedOptions, withRelated: requiredRelations, require: false});
 
             // Make sure we throw the right error if it doesn't exist
             if (!initialMember) {
                 throw new NotFoundError({message: tpl(messages.memberNotFound, {id: options.id})});
             }
+        }
+
+        // Throw error if email is invalid and it's been changed
+        if (
+            initialMember?.get('email') && memberData.email
+            && initialMember.get('email') !== memberData.email
+            && !validator.isEmail(memberData.email, {legacy: false})
+        ) {
+            throw new errors.ValidationError({
+                message: tpl(messages.invalidEmail),
+                property: 'email'
+            });
         }
 
         const memberStatusData = {};
@@ -366,25 +479,49 @@ module.exports = class MemberRepository {
             const productsToModify = productsToAdd.concat(productsToRemove);
 
             if (productsToModify.length !== 0) {
-                const exisitingSubscriptions = await initialMember.related('stripeSubscriptions').fetch(sharedOptions);
-                const existingActiveSubscriptions = exisitingSubscriptions.filter((subscription) => {
-                    return this.isActiveSubscriptionStatus(subscription.get('status'));
-                });
+                // Load active subscriptions information
+                await initialMember.load(
+                    [
+                        'stripeSubscriptions',
+                        'stripeSubscriptions.stripePrice',
+                        'stripeSubscriptions.stripePrice.stripeProduct',
+                        'stripeSubscriptions.stripePrice.stripeProduct.product'
+                    ], sharedOptions);
 
-                if (existingActiveSubscriptions.length) {
-                    throw new errors.BadRequestError({message: tpl(messages.existingSubscriptions)});
+                const exisitingSubscriptions = initialMember.related('stripeSubscriptions')?.models ?? [];
+
+                if (productsToRemove.length > 0) {
+                    // Only allow to delete comped products without a subscription attached to them
+                    // Other products should be removed by canceling them via the related stripe subscription
+                    const dontAllowToRemoveProductsIds = exisitingSubscriptions
+                        .filter(sub => this.isActiveSubscriptionStatus(sub.get('status')))
+                        .map(sub => sub.related('stripePrice')?.related('stripeProduct')?.get('product_id'));
+
+                    for (const deleteId of productsToRemove) {
+                        if (dontAllowToRemoveProductsIds.includes(deleteId)) {
+                            throw new errors.BadRequestError({message: tpl(messages.deleteProductWithActiveSubscription)});
+                        }
+                    }
+
+                    if (incomingProductIds.length === 0) {
+                        // CASE: We are removing all (comped) products from a member & there were no active subscriptions - the member is "free"
+                        memberStatusData.status = 'free';
+                    }
                 }
-            }
 
-            // CASE: We are removing all products from a member & there were no active subscriptions - the member is "free"
-            if (incomingProductIds.length === 0) {
-                memberStatusData.status = 'free';
-            } else {
-                // CASE: We are changing products & there were not active stripe subscriptions - the member is "comped"
-                if (productsToModify.length !== 0) {
+                if (productsToAdd.length > 0) {
+                    // Don't allow to add complimentary subscriptions (= creating a new product) when the member already has an active
+                    // subscription
+                    const existingActiveSubscriptions = exisitingSubscriptions.filter((subscription) => {
+                        return this.isActiveSubscriptionStatus(subscription.get('status'));
+                    });
+
+                    if (existingActiveSubscriptions.length) {
+                        throw new errors.BadRequestError({message: tpl(messages.addProductWithActiveSubscription)});
+                    }
+
+                    // CASE: We are changing products & there were not active stripe subscriptions - the member is "comped"
                     memberStatusData.status = 'comped';
-                } else {
-                    // CASE: We are not changing any products - leave the status alone
                 }
             }
         }
@@ -407,7 +544,7 @@ module.exports = class MemberRepository {
             if (!memberData.newsletters) {
                 if (memberData.subscribed === false) {
                     memberData.newsletters = [];
-                } else if (memberData.subscribed === true && !existingNewsletters.find(n => n.status === 'active')) {
+                } else if (memberData.subscribed === true && !existingNewsletters.find(n => n.get('status') === 'active')) {
                     const browseOptions = _.pick(options, 'transacting');
                     memberData.newsletters = await this.getSubscribeOnSignupNewsletters(browseOptions);
                 }
@@ -445,16 +582,7 @@ module.exports = class MemberRepository {
 
         // Add subscribe events for all (un)subscribed newsletters
         const context = options && options.context || {};
-        let source;
-        if (context.internal) {
-            source = 'system';
-        } else if (context.user) {
-            source = 'admin';
-        } else if (context.api_key) {
-            source = 'api';
-        } else {
-            source = 'member';
-        }
+        const source = this._resolveContextSource(context);
 
         for (const newsletterToAdd of newslettersToAdd) {
             await this._MemberSubscribeEvent.add({
@@ -475,10 +603,10 @@ module.exports = class MemberRepository {
         }
 
         if (newslettersToAdd.length > 0 || newslettersToRemove.length > 0) {
-            DomainEvents.dispatch(MemberSubscribeEvent.create({
+            this.dispatchEvent(MemberSubscribeEvent.create({
                 memberId: member.id,
                 source: source
-            }, member.updated_at));
+            }, member.updated_at), sharedOptions);
         }
 
         if (member.attributes.email !== member._previousAttributes.email) {
@@ -609,7 +737,6 @@ module.exports = class MemberRepository {
             // Include mongoTransformer to apply subscribed:{true|false} => newsletter relation mapping
             Object.assign(filterOptions, _.pick(options, ['filter', 'search', 'mongoTransformer']));
         }
-
         const memberRows = await this._Member.getFilteredCollectionQuery(filterOptions)
             .select('members.id')
             .distinct();
@@ -617,9 +744,20 @@ module.exports = class MemberRepository {
         const memberIds = memberRows.map(row => row.id);
 
         if (data.action === 'unsubscribe') {
-            return await this._Member.bulkDestroy(memberIds, 'members_newsletters', {column: 'member_id'});
-        }
+            const hasNewsletterSelected = (Object.prototype.hasOwnProperty.call(data, 'newsletter') && data.newsletter !== null);
+            if (hasNewsletterSelected) {
+                const membersArr = memberIds.join(',');
+                const unsubscribeRows = await this._MemberNewsletter.getFilteredCollectionQuery({
+                    filter: `newsletter_id:${data.newsletter}+member_id:[${membersArr}]`
+                });
+                const toUnsubscribe = unsubscribeRows.map(row => row.id);
 
+                return await this._MemberNewsletter.bulkDestroy(toUnsubscribe);
+            }
+            if (!hasNewsletterSelected) {
+                return await this._Member.bulkDestroy(memberIds, 'members_newsletters', {column: 'member_id'});
+            }
+        }
         if (data.action === 'removeLabel') {
             const membersLabelsRows = await this._Member.getLabelRelations({
                 labelId: data.meta.label.id,
@@ -692,6 +830,8 @@ module.exports = class MemberRepository {
      * @param {Object} data
      * @param {String} data.id - member ID
      * @param {Object} data.subscription
+     * @param {String} data.offerId
+     * @param {import('@tryghost/member-attribution/lib/attribution').AttributionResource} [data.attribution]
      * @param {*} options
      * @returns
      */
@@ -708,6 +848,11 @@ module.exports = class MemberRepository {
                 });
             });
         }
+
+        if (!options.batch_id) {
+            options.batch_id = ObjectId().toHexString();
+        }
+
         const member = await this._Member.findOne({
             id: data.id
         }, {...options, forUpdate: true});
@@ -742,13 +887,10 @@ module.exports = class MemberRepository {
             ghostProduct = await this._productRepository.get({stripe_product_id: subscriptionPriceData.product}, {...options, forUpdate: true});
             // Use first Ghost product as default product in case of missing link
             if (!ghostProduct) {
-                let {data: pageData} = await this._productRepository.list({
-                    limit: 1,
-                    filter: 'type:paid',
-                    ...options,
-                    forUpdate: true
+                ghostProduct = await this._productRepository.getDefaultProduct({
+                    forUpdate: true,
+                    ...options
                 });
-                ghostProduct = (pageData && pageData[0]) || null;
             }
 
             // Link Stripe Product & Price to Ghost Product
@@ -779,16 +921,21 @@ module.exports = class MemberRepository {
         }
 
         let stripeCouponId = subscription.discount && subscription.discount.coupon ? subscription.discount.coupon.id : null;
-        let offerId = null;
+
+        // For trial offers, offer id is passed from metadata as there is no stripe coupon
+        let offerId = data.offerId || null;
+        let offer = null;
 
         if (stripeCouponId) {
             // Get the offer from our database
-            const offer = await this._offerRepository.getByStripeCouponId(stripeCouponId, {transacting: options.transacting});
+            offer = await this._offerRepository.getByStripeCouponId(stripeCouponId, {transacting: options.transacting});
             if (offer) {
                 offerId = offer.id;
             } else {
                 logging.error(`Received an unknown stripe coupon id (${stripeCouponId}) for subscription - ${subscription.id}.`);
             }
+        } else if (offerId) {
+            offer = await this._offerRepository.getById(offerId, {transacting: options.transacting});
         }
 
         const subscriptionData = {
@@ -802,6 +949,9 @@ module.exports = class MemberRepository {
             default_payment_card_last4: paymentMethod && paymentMethod.card && paymentMethod.card.last4 || null,
             stripe_price_id: subscriptionPriceData.id,
             plan_id: subscriptionPriceData.id,
+            // trial start and end are returned as Stripe timestamps and need coversion
+            trial_start_at: subscription.trial_start ? new Date(subscription.trial_start * 1000) : null,
+            trial_end_at: subscription.trial_end ? new Date(subscription.trial_end * 1000) : null,
             // NOTE: Defaulting to interval as migration to nullable field
             // turned out to be much bigger problem.
             // Ideally, would need nickname field to be nullable on the DB level
@@ -822,6 +972,11 @@ module.exports = class MemberRepository {
 
         let eventData = {};
         if (model) {
+            // CASE: Offer is already mapped against sub, don't overwrite it with NULL
+            // Needed for trial offers, which don't have a stripe coupon/discount attached to sub
+            if (!subscriptionData.offer_id) {
+                delete subscriptionData.offer_id;
+            }
             const updated = await this._StripeCustomerSubscription.edit(subscriptionData, {
                 ...options,
                 id: model.id
@@ -831,9 +986,9 @@ module.exports = class MemberRepository {
                 const originalMrrDelta = model.get('mrr');
                 const updatedMrrDelta = updated.get('mrr');
 
-                const getStatus = (model) => {
-                    const status = model.get('status');
-                    const canceled = model.get('cancel_at_period_end');
+                const getStatus = (modelToCheck) => {
+                    const status = modelToCheck.get('status');
+                    const canceled = modelToCheck.get('cancel_at_period_end');
 
                     if (status === 'canceled') {
                         return 'expired';
@@ -879,18 +1034,32 @@ module.exports = class MemberRepository {
             }
         } else {
             eventData.created_at = new Date(subscription.start_date * 1000);
-            const model = await this._StripeCustomerSubscription.add(subscriptionData, options);
+            const subscriptionModel = await this._StripeCustomerSubscription.add(subscriptionData, options);
             await this._MemberPaidSubscriptionEvent.add({
                 member_id: member.id,
-                subscription_id: model.id,
+                subscription_id: subscriptionModel.id,
                 type: 'created',
                 source: 'stripe',
                 from_plan: null,
                 to_plan: subscriptionPriceData.id,
                 currency: subscriptionPriceData.currency,
-                mrr_delta: model.get('mrr'),
+                mrr_delta: subscriptionModel.get('mrr'),
                 ...eventData
             }, options);
+
+            const context = options?.context || {};
+            const source = this._resolveContextSource(context);
+
+            const event = SubscriptionCreatedEvent.create({
+                source,
+                tierId: ghostProduct?.get('id'),
+                memberId: member.id,
+                subscriptionId: subscriptionModel.get('id'),
+                offerId: offerId,
+                attribution: data.attribution,
+                batchId: options.batch_id
+            });
+            this.dispatchEvent(event, options);
         }
 
         let memberProducts = (await member.related('products').fetch(options)).toJSON();
@@ -902,9 +1071,11 @@ module.exports = class MemberRepository {
             } else {
                 status = 'paid';
             }
+
             // This is an active subscription! Add the product
             if (ghostProduct) {
-                memberProducts.push(ghostProduct.toJSON());
+                // memberProducts.push(ghostProduct.toJSON());
+                memberProducts = [ghostProduct.toJSON()];
             }
             if (model) {
                 if (model.get('stripe_price_id') !== subscriptionData.stripe_price_id) {
@@ -917,10 +1088,10 @@ module.exports = class MemberRepository {
 
                     let activeSubscriptionForChangedProduct = false;
 
-                    for (const subscription of subscriptions.models) {
-                        if (this.isActiveSubscriptionStatus(subscription.get('status'))) {
+                    for (const subscriptionModel of subscriptions.models) {
+                        if (this.isActiveSubscriptionStatus(subscriptionModel.get('status'))) {
                             try {
-                                const subscriptionProduct = await this._productRepository.get({stripe_price_id: subscription.get('stripe_price_id')}, options);
+                                const subscriptionProduct = await this._productRepository.get({stripe_price_id: subscriptionModel.get('stripe_price_id')}, options);
                                 if (subscriptionProduct && changedProduct && subscriptionProduct.id === changedProduct.id) {
                                     activeSubscriptionForChangedProduct = true;
                                 }
@@ -941,11 +1112,11 @@ module.exports = class MemberRepository {
         } else {
             const subscriptions = await member.related('stripeSubscriptions').fetch(options);
             let activeSubscriptionForGhostProduct = false;
-            for (const subscription of subscriptions.models) {
-                if (this.isActiveSubscriptionStatus(subscription.get('status'))) {
+            for (const subscriptionModel of subscriptions.models) {
+                if (this.isActiveSubscriptionStatus(subscriptionModel.get('status'))) {
                     status = 'paid';
                     try {
-                        const subscriptionProduct = await this._productRepository.get({stripe_price_id: subscription.get('stripe_price_id')}, options);
+                        const subscriptionProduct = await this._productRepository.get({stripe_price_id: subscriptionModel.get('stripe_price_id')}, options);
                         if (subscriptionProduct && ghostProduct && subscriptionProduct.id === ghostProduct.id) {
                             activeSubscriptionForGhostProduct = true;
                         }
@@ -1151,6 +1322,34 @@ module.exports = class MemberRepository {
                 id: member.id,
                 subscription: updatedSubscription
             }, options);
+
+            // Dispatch cancellation event
+            if (data.subscription.cancel_at_period_end) {
+                const stripeProductId = _.get(updatedSubscription, 'items.data[0].price.product');
+
+                let ghostProduct;
+                try {
+                    ghostProduct = await this._productRepository.get(
+                        {stripe_product_id: stripeProductId},
+                        {...sharedOptions, forUpdate: true}
+                    );
+                } catch (e) {
+                    ghostProduct = null;
+                }
+
+                const context = options?.context || {};
+                const source = this._resolveContextSource(context);
+                const cancellationTimestamp = updatedSubscription.canceled_at
+                    ? new Date(updatedSubscription.canceled_at * 1000)
+                    : new Date();
+                const cancelEventData = {
+                    source,
+                    memberId: member.id,
+                    subscriptionId: subscriptionModel.get('id'),
+                    tierId: ghostProduct?.get('id')
+                };
+                this.dispatchEvent(SubscriptionCancelledEvent.create(cancelEventData, cancellationTimestamp), options);
+            }
         }
     }
 
@@ -1225,18 +1424,19 @@ module.exports = class MemberRepository {
         const activeSubscriptions = subscriptions.models.filter((subscription) => {
             return this.isActiveSubscriptionStatus(subscription.get('status'));
         });
+        const sharedOptions = _.pick(options, ['context', 'transacting']);
 
-        const productPage = await this._productRepository.list({
-            limit: 1,
+        const ghostProductModel = await this._productRepository.getDefaultProduct({
             withRelated: ['stripePrices'],
-            filter: 'type:paid',
-            ...options
+            ...sharedOptions
         });
 
-        const defaultProduct = productPage && productPage.data && productPage.data[0] && productPage.data[0].toJSON();
+        const defaultProduct = ghostProductModel?.toJSON();
 
         if (!defaultProduct) {
-            throw new errors.NotFoundError({message: tpl(messages.productNotFound)});
+            throw new errors.NotFoundError({
+                message: tpl(messages.productNotFound, {id: '"default"'})
+            });
         }
 
         const zeroValuePrices = defaultProduct.stripePrices.filter((price) => {
@@ -1285,7 +1485,7 @@ module.exports = class MemberRepository {
                 await this.linkSubscription({
                     id: member.id,
                     subscription: updatedSubscription
-                }, options);
+                }, sharedOptions);
             }
         } else {
             const stripeCustomer = await this._stripeAPIService.createCustomer({
@@ -1297,7 +1497,7 @@ module.exports = class MemberRepository {
                 member_id: data.id,
                 email: stripeCustomer.email,
                 name: stripeCustomer.name
-            }, options);
+            }, sharedOptions);
 
             let zeroValuePrice = zeroValuePrices[0];
 
@@ -1313,7 +1513,7 @@ module.exports = class MemberRepository {
                         interval: 'year',
                         amount: 0
                     }]
-                }, options)).toJSON();
+                }, sharedOptions)).toJSON();
                 zeroValuePrice = product.stripePrices.find((price) => {
                     return price.currency.toLowerCase() === 'usd' && price.amount === 0;
                 });
@@ -1328,7 +1528,7 @@ module.exports = class MemberRepository {
             await this.linkSubscription({
                 id: member.id,
                 subscription
-            }, options);
+            }, sharedOptions);
         }
     }
 
@@ -1370,4 +1570,3 @@ module.exports = class MemberRepository {
         return true;
     }
 };
-

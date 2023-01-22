@@ -1,8 +1,8 @@
 const {SafeString} = require('../services/handlebars');
-const {urlUtils, getFrontendKey, labs, settingsCache} = require('../services/proxy');
+const {urlUtils, getFrontendKey, settingsCache} = require('../services/proxy');
 const {getFrontendAppConfig, getDataAttributes} = require('../utils/frontend-apps');
 
-async function comments(options) {
+module.exports = async function comments(options) {
     // todo: For now check on the comment id to exclude normal pages (we probably have a better way to do this)
 
     const commentId = this.comment_id;
@@ -24,13 +24,24 @@ async function comments(options) {
     }
 
     let colorScheme = 'auto';
-    if (options.hash.color_scheme === 'dark' || options.hash.color_scheme === 'light') {
-        colorScheme = options.hash.color_scheme;
+    if (options.hash.mode === 'dark' || options.hash.mode === 'light') {
+        colorScheme = options.hash.mode;
     }
 
-    let avatarSaturation = parseInt(options.hash.avatar_saturation);
+    let avatarSaturation = parseInt(options.hash.saturation);
     if (isNaN(avatarSaturation)) {
-        avatarSaturation = 50;
+        avatarSaturation = 60;
+    }
+
+    let count = true;
+    if (options.hash.count === false) {
+        count = false;
+    }
+
+    // This is null so that the comments-ui can handle the default title
+    let title = null;
+    if (typeof options.hash.title === 'string') {
+        title = options.hash.title;
     }
 
     let accentColor = '';
@@ -47,13 +58,16 @@ async function comments(options) {
         admin: urlUtils.urlFor('admin', true),
         key: frontendKey,
         styles: stylesUrl,
+        title: title,
+        count: count,
         'post-id': this.id,
         'sentry-dsn': '', /* todo: insert sentry dsn key here */
         'color-scheme': colorScheme,
         'avatar-saturation': avatarSaturation,
         'accent-color': accentColor,
         'app-version': appVersion,
-        'comments-enabled': commentsEnabled
+        'comments-enabled': commentsEnabled,
+        publication: settingsCache.get('title')
     };
 
     const dataAttributes = getDataAttributes(data);
@@ -61,19 +75,6 @@ async function comments(options) {
     return new SafeString(`
         <script defer src="${scriptUrl}" ${dataAttributes} crossorigin="anonymous"></script>
     `);
-}
-
-module.exports = async function commentsLabsWrapper() {
-    const self = this;
-    const args = arguments;
-
-    return labs.enabledHelper({
-        flagKey: 'comments',
-        flagName: 'Comments',
-        helperName: 'comments'
-    }, () => {
-        return comments.apply(self, args);
-    });
 };
 
 module.exports.async = true;

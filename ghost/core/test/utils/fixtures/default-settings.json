@@ -55,6 +55,14 @@
         "members_stripe_webhook_secret": {
             "defaultValue": null,
             "type": "string"
+        },
+        "members_track_sources": {
+            "defaultValue": "true",
+            "validations": {
+                "isEmpty": false,
+                "isIn": [["true", "false"]]
+            },
+            "type": "boolean"
         }
     },
     "site": {
@@ -83,7 +91,7 @@
             "type": "string"
         },
         "cover_image": {
-            "defaultValue": "https://static.ghost.org/v4.0.0/images/publication-cover.jpg",
+            "defaultValue": "https://static.ghost.org/v5.0.0/images/publication-cover.jpg",
             "type": "string"
         },
         "icon": {
@@ -295,6 +303,14 @@
         "members_yearly_price_id": {
             "defaultValue": null,
             "type": "string"
+        },
+        "members_track_sources": {
+            "defaultValue": "true",
+            "validations": {
+                "isEmpty": false,
+                "isIn": [["true", "false"]]
+            },
+            "type": "boolean"
         }
     },
     "portal": {
@@ -353,6 +369,14 @@
             "type": "string"
         },
         "email_track_opens": {
+            "defaultValue": "true",
+            "validations": {
+                "isEmpty": false,
+                "isIn": [["true", "false"]]
+            },
+            "type": "boolean"
+        },
+        "email_track_clicks": {
             "defaultValue": "true",
             "validations": {
                 "isEmpty": false,
@@ -449,6 +473,30 @@
         "editor_default_email_recipients_filter": {
             "defaultValue": "all",
             "type": "string"
+        }
+    },
+    "comments": {
+        "comments_enabled": {
+            "type": "string",
+            "defaultValue": "off",
+            "validations": {
+                "isEmpty": false,
+                "isIn": [[
+                    "off",
+                    "all",
+                    "paid"
+                ]]
+            }
+        }
+    },
+    "analytics": {
+        "outbound_link_tagging": {
+            "defaultValue": "true",
+            "validations": {
+                "isEmpty": false,
+                "isIn": [["true", "false"]]
+            },
+            "type": "boolean"
         }
     }
 }

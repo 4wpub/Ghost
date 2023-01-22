@@ -105,11 +105,13 @@ async function initCore({ghostServer, config, bootLogger, frontend}) {
     // The URLService is a core part of Ghost, which depends on models.
     debug('Begin: Url Service');
     const urlService = require('./server/services/url');
+    const urlServiceStart = Date.now();
     // Note: there is no await here, we do not wait for the url service to finish
     // We can return, but the site will remain in maintenance mode until this finishes
     // This is managed on request: https://github.com/TryGhost/Ghost/blob/main/core/app.js#L10
     urlService.init({
         onFinished: () => {
+            bootLogger.metric('url-service', urlServiceStart);
             bootLogger.log('URL Service Ready');
         },
         urlCache: !frontend // hacky parameter to make the cache initialization kick in as we can't initialize labs before the boot
@@ -153,9 +155,14 @@ async function initServicesForFrontend({bootLogger}) {
     debug('End: Routing Settings');
 
     debug('Begin: Redirects');
-    const customRedirects = require('./server/services/redirects');
-    await customRedirects.init(),
+    const customRedirects = require('./server/services/custom-redirects');
+    await customRedirects.init();
     debug('End: Redirects');
+
+    debug('Begin: Link Redirects');
+    const linkRedirects = require('./server/services/link-redirection');
+    await linkRedirects.init();
+    debug('End: Link Redirects');
 
     debug('Begin: Themes');
     // customThemSettingsService.api must be initialized before any theme activation occurs
@@ -208,7 +215,7 @@ async function initExpressApps({frontend, backend, config}) {
     debug('Begin: initExpressApps');
 
     const parentApp = require('./server/web/parent/app')();
-    const vhost = require('@tryghost/vhost-middleware');
+    const vhost = require('@tryghost/mw-vhost');
 
     // Mount the express apps on the parentApp
     if (backend) {
@@ -267,6 +274,7 @@ async function initServices({config}) {
     debug('Begin: Services');
     const stripe = require('./server/services/stripe');
     const members = require('./server/services/members');
+    const tiers = require('./server/services/tiers');
     const permissions = require('./server/services/permissions');
     const xmlrpc = require('./server/services/xmlrpc');
     const slack = require('./server/services/slack');
@@ -277,6 +285,14 @@ async function initServices({config}) {
     const apiVersionCompatibility = require('./server/services/api-version-compatibility');
     const scheduling = require('./server/adapters/scheduling');
     const comments = require('./server/services/comments');
+    const staffService = require('./server/services/staff');
+    const memberAttribution = require('./server/services/member-attribution');
+    const membersEvents = require('./server/services/members-events');
+    const linkTracking = require('./server/services/link-tracking');
+    const audienceFeedback = require('./server/services/audience-feedback');
+    const emailSuppressionList = require('./server/services/email-suppression-list');
+    const emailService = require('./server/services/email-service');
+    const mentionsService = require('./server/services/mentions');
 
     const urlUtils = require('./shared/url-utils');
 
@@ -289,10 +305,17 @@ async function initServices({config}) {
     await stripe.init();
 
     await Promise.all([
+        memberAttribution.init(),
+        mentionsService.init(),
+        staffService.init(),
         members.init(),
+        tiers.init(),
+        membersEvents.init(),
         permissions.init(),
         xmlrpc.listen(),
         slack.listen(),
+        audienceFeedback.init(),
+        emailService.init(),
         mega.listen(),
         webhooks.listen(),
         appService.init(),
@@ -300,7 +323,9 @@ async function initServices({config}) {
         scheduling.init({
             apiUrl: urlUtils.urlFor('api', {type: 'admin'}, true)
         }),
-        comments.init()
+        comments.init(),
+        linkTracking.init(),
+        emailSuppressionList.init()
     ]);
     debug('End: Services');
 

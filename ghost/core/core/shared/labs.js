@@ -14,7 +14,14 @@ const messages = {
 };
 
 // flags in this list always return `true`, allows quick global enable prior to full flag removal
-const GA_FEATURES = [];
+const GA_FEATURES = [
+    'suppressionList',
+    'sourceAttribution',
+    'memberAttribution',
+    'audienceFeedback',
+    'themeErrorsNotification',
+    'emailStability'
+];
 
 // NOTE: this allowlist is meant to be used to filter out any unexpected
 //       input for the "labs" setting value
@@ -25,7 +32,9 @@ const BETA_FEATURES = [
 const ALPHA_FEATURES = [
     'urlCache',
     'beforeAfterCard',
-    'comments'
+    'lexicalEditor',
+    'webmentions',
+    'outboundLinkTagging'
 ];
 
 module.exports.GA_KEYS = [...GA_FEATURES];

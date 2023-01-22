@@ -4,6 +4,8 @@ const {Label} = require('../../../core/server/models/label');
 const {Product} = require('../../../core/server/models/product');
 const {Member} = require('../../../core/server/models/member');
 const {MemberStripeCustomer} = require('../../../core/server/models/member-stripe-customer');
+const {Offer} = require('../../../core/server/models/offer');
+const {OfferRedemption} = require('../../../core/server/models/offer-redemption');
 const {StripeCustomerSubscription} = require('../../../core/server/models/stripe-customer-subscription');
 
 const testUtils = require('../../utils');
@@ -112,11 +114,13 @@ describe('Member Model', function run() {
     describe('stripeCustomers', function () {
         it('Is correctly mapped to the stripe customers', async function () {
             const context = testUtils.context.admin;
-            await Member.add({
-                email: 'test@test.member',
-                stripeCustomers: [{
-                    customer_id: 'fake_customer_id1'
-                }]
+            const testMember = await Member.add({
+                email: 'test@test.member'
+            }, context);
+
+            await MemberStripeCustomer.add({
+                member_id: testMember.id,
+                customer_id: 'fake_customer_id1'
             }, context);
 
             const customer1 = await MemberStripeCustomer.findOne({
@@ -270,7 +274,7 @@ describe('Member Model', function run() {
     });
 
     describe('products', function () {
-        it('Products can be created & added to members by the product array', async function () {
+        it('Products can be added to members by the product array', async function () {
             const context = testUtils.context.admin;
             const product = await Product.add({
                 name: 'Product-Add-Test',
@@ -280,9 +284,6 @@ describe('Member Model', function run() {
                 email: 'testing-products@test.member',
                 products: [{
                     id: product.id
-                }, {
-                    name: 'Product-Create-Test',
-                    type: 'paid'
                 }]
             }, {
                 ...context,
@@ -290,16 +291,12 @@ describe('Member Model', function run() {
             });
 
             const createdProduct = await Product.findOne({
-                name: 'Product-Create-Test'
+                name: 'Product-Add-Test'
             }, context);
 
             should.exist(createdProduct, 'Product should have been created');
 
             const products = member.related('products').toJSON();
-
-            should.exist(
-                products.find(model => model.name === 'Product-Create-Test')
-            );
 
             should.exist(
                 products.find(model => model.name === 'Product-Add-Test')
@@ -311,12 +308,15 @@ describe('Member Model', function run() {
         it('Should allow filtering on products', async function () {
             const context = testUtils.context.admin;
 
+            const vipProduct = await Product.add({
+                name: 'VIP',
+                slug: 'vip',
+                type: 'paid'
+            });
             await Member.add({
                 email: 'filter-test@test.member',
                 products: [{
-                    name: 'VIP',
-                    slug: 'vip',
-                    type: 'paid'
+                    id: vipProduct.id
                 }]
             }, context);
 
@@ -504,6 +504,76 @@ describe('Member Model', function run() {
                 const members = await Member.findPage({filter: `subscriptions.plan_interval:month+subscriptions.plan_interval:-year`});
                 should.equal(members.data.length, 0, 'Can search for members by plan_interval');
             }
+        });
+
+        it('Should allow filtering on offers redeemed', async function () {
+            const context = testUtils.context.admin;
+            let email = 'test@offers.com';
+            const member = await Member.add({
+                email: email,
+                labels: []
+            }, context);
+
+            const product = await Product.add({
+                name: 'Ghost Product',
+                slug: 'ghost-product',
+                type: 'paid'
+            }, context);
+
+            const offerData = testUtils.DataGenerator.forKnex.createOffer({
+                product_id: product.get('id')
+            });
+            const offerModel = await Offer.add(offerData, {context: {internal: true}});
+
+            await StripeProduct.add({
+                product_id: product.get('id'),
+                stripe_product_id: 'fake_product_id'
+            }, context);
+
+            await StripePrice.add({
+                stripe_price_id: 'fake_plan_id',
+                stripe_product_id: 'fake_product_id',
+                amount: 5000,
+                interval: 'monthly',
+                active: 1,
+                nickname: 'Monthly',
+                currency: 'USD',
+                type: 'recurring'
+            }, context);
+
+            await MemberStripeCustomer.add({
+                member_id: member.get('id'),
+                customer_id: 'fake_customer_id1'
+            }, context);
+
+            const subscription = await StripeCustomerSubscription.add({
+                customer_id: 'fake_customer_id1',
+                subscription_id: 'fake_subscription_id1',
+                plan_id: 'fake_plan_id',
+                stripe_price_id: 'fake_plan_id',
+                plan_amount: 1337,
+                plan_nickname: 'e-LEET',
+                plan_interval: 'year',
+                plan_currency: 'btc',
+                status: 'active',
+                start_date: new Date(),
+                current_period_end: new Date(),
+                cancel_at_period_end: false
+            }, context);
+
+            const addRedemption = await OfferRedemption.add({
+                offer_id: offerModel.get('id'),
+                member_id: member.get('id'),
+                created_at: new Date(),
+                subscription_id: subscription.get('id')
+            }, context);
+
+            const offerId = addRedemption.get('offer_id');
+
+            const members = await Member.findPage({filter: `offer_redemptions:${offerId}`});
+            // convert members to json
+            const membersJson = members.data.map(model => model.toJSON());
+            should.equal(membersJson[0].email, email, 'Can search for members with offer_redemptions');
         });
     });
 });

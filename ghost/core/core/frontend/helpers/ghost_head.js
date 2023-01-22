@@ -2,7 +2,7 @@
 // Usage: `{{ghost_head}}`
 //
 // Outputs scripts and other assets at the top of a Ghost theme
-const {metaData, settingsCache, config, blogIcon, urlUtils, labs, getFrontendKey} = require('../services/proxy');
+const {metaData, settingsCache, config, blogIcon, urlUtils, getFrontendKey} = require('../services/proxy');
 const {escapeExpression, SafeString} = require('../services/handlebars');
 
 // BAD REQUIRE
@@ -81,6 +81,17 @@ function getSearchHelper(frontendKey) {
     let helper = `<script defer src="${scriptUrl}" ${dataAttrs} crossorigin="anonymous"></script>`;
 
     return helper;
+}
+
+function getWebmentionDiscoveryLink() {
+    try {
+        const siteUrl = urlUtils.getSiteUrl();
+        const webmentionUrl = new URL('webmentions/receive/', siteUrl);
+        return `<link href="${webmentionUrl.href}" rel="webmention" />`;
+    } catch (err) {
+        logging.warn(err);
+        return '';
+    }
 }
 
 /**
@@ -167,11 +178,12 @@ module.exports = async function ghost_head(options) { // eslint-disable-line cam
             }
 
             head.push('<link rel="canonical" href="' + escapeExpression(meta.canonicalUrl) + '" />');
-            head.push('<meta name="referrer" content="' + referrerPolicy + '" />');
 
-            // don't allow indexing of preview URLs!
             if (_.includes(context, 'preview')) {
                 head.push(writeMetaTag('robots', 'noindex,nofollow', 'name'));
+                head.push(writeMetaTag('referrer', 'same-origin', 'name'));
+            } else {
+                head.push(writeMetaTag('referrer', referrerPolicy, 'name'));
             }
 
             // show amp link in post when 1. we are not on the amp page and 2. amp is enabled
@@ -206,12 +218,6 @@ module.exports = async function ghost_head(options) { // eslint-disable-line cam
         head.push('<meta name="generator" content="Ghost ' +
             escapeExpression(safeVersion) + '" />');
 
-        // Ghost analytics tag
-        if (labs.isSet('membersActivity')) {
-            const postId = (dataRoot && dataRoot.post) ? dataRoot.post.id : '';
-            head.push(writeMetaTag('ghost-analytics-id', postId, 'name'));
-        }
-
         head.push('<link rel="alternate" type="application/rss+xml" title="' +
             escapeExpression(meta.site.title) + '" href="' +
             escapeExpression(meta.rssUrl) + '" />');
@@ -220,6 +226,11 @@ module.exports = async function ghost_head(options) { // eslint-disable-line cam
         if (!_.includes(context, 'amp')) {
             head.push(getMembersHelper(options.data, frontendKey));
             head.push(getSearchHelper(frontendKey));
+            try {
+                head.push(getWebmentionDiscoveryLink());
+            } catch (err) {
+                logging.warn(err);
+            }
 
             // @TODO do this in a more "frameworky" way
             if (cardAssetService.hasFile('js')) {
@@ -229,8 +240,12 @@ module.exports = async function ghost_head(options) { // eslint-disable-line cam
                 head.push(`<link rel="stylesheet" type="text/css" href="${getAssetUrl('public/cards.min.css')}">`);
             }
 
-            if (labs.isSet('comments') && settingsCache.get('enable_comments') !== 'off') {
+            if (settingsCache.get('comments_enabled') !== 'off') {
                 head.push(`<script defer src="${getAssetUrl('public/comment-counts.min.js')}" data-ghost-comments-counts-api="${urlUtils.getSiteUrl(true)}members/api/comments/counts/"></script>`);
+            }
+
+            if (settingsCache.get('members_enabled') && settingsCache.get('members_track_sources')) {
+                head.push(`<script defer src="${getAssetUrl('public/member-attribution.min.js')}"></script>`);
             }
 
             if (!_.isEmpty(globalCodeinjection)) {

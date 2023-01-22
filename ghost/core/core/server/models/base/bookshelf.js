@@ -1,8 +1,7 @@
 const _ = require('lodash');
 const bookshelf = require('bookshelf');
-const ObjectId = require('bson-objectid');
+const ObjectId = require('bson-objectid').default;
 const plugins = require('@tryghost/bookshelf-plugins');
-const Promise = require('bluebird');
 
 const db = require('../../data/db');
 
@@ -67,6 +66,7 @@ ghostBookshelf.plugin(require('./plugins/relations'));
 ghostBookshelf.plugin('bookshelf-relations', {
     allowedOptions: ['context', 'importing', 'migrating'],
     unsetRelations: true,
+    editRelations: false,
     extendChanged: '_changed',
     attachPreviousRelations: true,
     hooks: {
@@ -84,13 +84,13 @@ ghostBookshelf.plugin('bookshelf-relations', {
                     return Promise.resolve();
                 }
 
-                return Promise.each(targets.models, function (target, index) {
+                return Promise.all(targets.models.map((target, index) => {
                     queryOptions.query.where[existing.relatedData.otherKey] = target.id;
 
                     return existing.updatePivot({
                         sort_order: index
                     }, _.extend({}, options, queryOptions));
-                });
+                }));
             },
             beforeRelationCreation: function onCreatingRelation(model, data) {
                 data.id = ObjectId().toHexString();

@@ -1,8 +1,12 @@
-const adminUrl = window.location.href.replace('auth-frame/', '');
+const adminUrl = window.location.href.replace('auth-frame/', '') + 'api/admin';
+
+// At compile time, we'll replace the value with the actual origin.
+const siteOrigin = '{{SITE_ORIGIN}}';
 
 window.addEventListener('message', async function (event) {
-    if (event.origin !== '*') {
-        // return;
+    if (event.origin !== siteOrigin) {
+        console.warn('Ignored message to admin auth iframe because of mismatch in origin', 'expected', siteOrigin, 'got', event.origin, 'with data', event.data);
+        return;
     }
     let data = null;
     try {
@@ -16,13 +20,13 @@ window.addEventListener('message', async function (event) {
             uid: data.uid,
             error: error,
             result: result
-        }), '*');
+        }), siteOrigin);
     }
 
     if (data.action === 'getUser') {
         try {
             const res = await fetch(
-                adminUrl + 'api/canary/admin/users/me/'
+                adminUrl + '/users/me/'
             );
             const json = await res.json();
             respond(null, json);
@@ -33,7 +37,7 @@ window.addEventListener('message', async function (event) {
 
     if (data.action === 'hideComment') {
         try {
-            const res = await fetch(adminUrl + 'api/canary/admin/comments/' + data.id + '/', {
+            const res = await fetch(adminUrl + '/comments/' + data.id + '/', {
                 method: 'PUT',
                 body: JSON.stringify({
                     comments: [{
@@ -54,7 +58,7 @@ window.addEventListener('message', async function (event) {
 
     if (data.action === 'showComment') {
         try {
-            const res = await fetch(adminUrl + 'api/canary/admin/comments/' + data.id + '/', {
+            const res = await fetch(adminUrl + '/comments/' + data.id + '/', {
                 method: 'PUT',
                 body: JSON.stringify({
                     comments: [{

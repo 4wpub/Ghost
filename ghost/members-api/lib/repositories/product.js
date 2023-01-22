@@ -1,4 +1,4 @@
-const {UpdateCollisionError, NotFoundError, MethodNotAllowedError, ValidationError} = require('@tryghost/errors');
+const {UpdateCollisionError, NotFoundError, MethodNotAllowedError, ValidationError, BadRequestError} = require('@tryghost/errors');
 const tpl = require('@tryghost/tpl');
 
 const messages = {
@@ -129,6 +129,21 @@ class ProductRepository {
     }
 
     /**
+     * Fetches the default product
+     * @param {Object} options
+     * @returns {Promise<ProductModel>}
+     */
+    async getDefaultProduct(options = {}) {
+        const defaultProductPage = await this.list({
+            filter: 'type:paid+active:true',
+            limit: 1,
+            ...options
+        });
+
+        return defaultProductPage.data[0];
+    }
+
+    /**
      * Creates a product from a name
      *
      * @param {object} data
@@ -142,6 +157,7 @@ class ProductRepository {
      * @param {StripePriceInput|null} data.yearly_price
      * @param {string} data.product_id
      * @param {string} data.stripe_product_id
+     * @param {number} data.trial_days
      *
      * @param {object} options
      *
@@ -172,6 +188,12 @@ class ProductRepository {
             validatePrice(data.monthly_price);
         }
 
+        if (data.yearly_price && data.monthly_price && data.yearly_price.currency !== data.monthly_price.currency) {
+            throw new BadRequestError({
+                message: 'The monthly and yearly price must use the same currency'
+            });
+        }
+
         if (data.stripe_prices) {
             data.stripe_prices.forEach(validatePrice);
         }
@@ -185,6 +207,20 @@ class ProductRepository {
             benefits: data.benefits,
             welcome_page_url: data.welcome_page_url
         };
+
+        if (data.monthly_price) {
+            productData.monthly_price = data.monthly_price.amount;
+            productData.currency = data.monthly_price.currency;
+        }
+
+        if (data.yearly_price) {
+            productData.yearly_price = data.yearly_price.amount;
+            productData.currency = data.yearly_price.currency;
+        }
+
+        if (Reflect.has(data, 'trial_days')) {
+            productData.trial_days = data.trial_days;
+        }
 
         const product = await this._Product.add(productData, options);
 
@@ -288,11 +324,12 @@ class ProductRepository {
      * @param {string} data.id
      * @param {string} data.name
      * @param {string} data.description
+     * @param {number} data.trial_days
      * @param {'public'|'none'} data.visibility
      * @param {string} data.welcome_page_url
      * @param {BenefitInput[]} data.benefits
      *
-     * @param {StripePriceInput[]=} data.stripe_prices
+     * @param {StripePriceInput[]} [data.stripe_prices]
      * @param {StripePriceInput|null} data.monthly_price
      * @param {StripePriceInput|null} data.yearly_price
      *
@@ -329,6 +366,12 @@ class ProductRepository {
             data.stripe_prices.forEach(validatePrice);
         }
 
+        if (data.yearly_price && data.monthly_price && data.yearly_price.currency !== data.monthly_price.currency) {
+            throw new BadRequestError({
+                message: 'The monthly and yearly price must use the same currency'
+            });
+        }
+
         const productId = data.id || options.id;
 
         const existingProduct = await this._Product.findOne({id: productId}, options);
@@ -341,13 +384,28 @@ class ProductRepository {
             welcome_page_url: data.welcome_page_url
         };
 
+        if (data.monthly_price) {
+            productData.monthly_price = data.monthly_price.amount;
+            productData.currency = data.monthly_price.currency;
+        }
+
+        if (data.yearly_price) {
+            productData.yearly_price = data.yearly_price.amount;
+            productData.currency = data.yearly_price.currency;
+        }
+
         if (Reflect.has(data, 'active')) {
             productData.active = data.active;
+        }
+
+        if (Reflect.has(data, 'trial_days')) {
+            productData.trial_days = data.trial_days;
         }
 
         if (existingProduct.get('type') === 'free') {
             delete productData.name;
             delete productData.active;
+            delete productData.trial_days;
         }
 
         if (existingProduct.get('active') === true && productData.active === false) {
@@ -410,7 +468,8 @@ class ProductRepository {
                         amount: data.monthly_price.amount,
                         currency: data.monthly_price.currency,
                         type: 'recurring',
-                        interval: 'month'
+                        interval: 'month',
+                        active: true
                     }, options);
                     let priceModel;
                     if (existingPrice) {
@@ -457,7 +516,8 @@ class ProductRepository {
                         amount: data.yearly_price.amount,
                         currency: data.yearly_price.currency,
                         type: 'recurring',
-                        interval: 'year'
+                        interval: 'year',
+                        active: true
                     }, options);
                     let priceModel;
 
@@ -505,12 +565,12 @@ class ProductRepository {
                 });
 
                 for (const existingPrice of existingPrices) {
-                    const productId = existingPrice.stripe_product_id;
-                    let stripeProduct = await this._StripeProduct.findOne({stripe_product_id: productId}, options);
+                    const existingProductId = existingPrice.stripe_product_id;
+                    let stripeProduct = await this._StripeProduct.findOne({stripe_product_id: existingProductId}, options);
                     if (!stripeProduct) {
                         stripeProduct = await this._StripeProduct.add({
                             product_id: product.id,
-                            stripe_product_id: productId
+                            stripe_product_id: existingProductId
                         }, options);
                     }
                     const stripePrice = await this._StripePrice.findOne({stripe_price_id: existingPrice.stripe_price_id}, options);
@@ -545,9 +605,9 @@ class ProductRepository {
                 }
 
                 for (const newPrice of newPrices) {
-                    const productId = newPrice.stripe_product_id;
-                    const stripeProduct = productId ?
-                        await this._StripeProduct.findOne({stripe_product_id: productId}, options) : defaultStripeProduct;
+                    const newProductId = newPrice.stripe_product_id;
+                    const stripeProduct = newProductId ?
+                        await this._StripeProduct.findOne({stripe_product_id: newProductId}, options) : defaultStripeProduct;
 
                     const price = await this._stripeAPIService.createPrice({
                         product: stripeProduct.get('stripe_product_id'),

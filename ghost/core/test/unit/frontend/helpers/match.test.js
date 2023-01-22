@@ -1,28 +1,19 @@
 const should = require('should');
 const sinon = require('sinon');
 const _ = require('lodash');
-const matchHelper = require('../../../../core/frontend/helpers/match');
-const titleHelper = require('../../../../core/frontend/helpers/title');
-const labs = require('../../../../core/shared/labs');
-const handlebars = require('../../../../core/frontend/services/theme-engine/engine').handlebars;
+
+const {registerHelper, shouldCompileToExpected} = require('./utils/handlebars');
 const {SafeString} = require('express-hbs');
 
 describe('Match helper', function () {
     before(function () {
-        handlebars.registerHelper('match', matchHelper);
-        handlebars.registerHelper('title', titleHelper);
+        registerHelper('match');
+        registerHelper('title');
     });
 
     afterEach(function () {
         sinon.restore();
     });
-
-    function shouldCompileToExpected(templateString, hash, expected) {
-        const template = handlebars.compile(templateString);
-        const result = template(hash);
-
-        result.should.eql(expected);
-    }
 
     /**
      * Run tests takes a list of tests & a data hash in the form of two objects
@@ -260,7 +251,7 @@ describe('Match helper', function () {
         // allows us to know if the original value was a boolean or a string
         // These tests make sure that we can compare to the _originaL_ value
         // But that we don't start allowing weird things like boolean true being equal to string true
-        describe('SafeString behaviour makes sense(ish)', function () {
+        describe('SafeString behavior makes sense(ish)', function () {
             runTests({
                 // Title equals true value = true
                 '{{match (match title "=" "The Title") "=" "true"}}': 'false',

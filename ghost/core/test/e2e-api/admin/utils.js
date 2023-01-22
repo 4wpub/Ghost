@@ -26,7 +26,7 @@ const expectedProperties = {
     members: ['members', 'meta'],
     snippets: ['snippets', 'meta'],
 
-    action: ['id', 'resource_type', 'actor_type', 'event', 'created_at', 'actor'],
+    action: ['id', 'resource_type', 'actor_type', 'event', 'created_at', 'actor', 'context', 'resource_id', 'actor_id'],
 
     config: [
         'version',
@@ -85,7 +85,8 @@ const expectedProperties = {
         'frontmatter',
         'email_only',
         'tiers',
-        'newsletter'
+        'newsletter',
+        'count'
     ],
 
     page: [
@@ -124,7 +125,8 @@ const expectedProperties = {
         'meta_title',
         'meta_description',
         'frontmatter',
-        'tiers'
+        'tiers',
+        'count'
     ],
 
     user: _(schema.users)
@@ -219,10 +221,10 @@ module.exports = {
         return testUtils.API.doAuth(`${API_URL}session/`, ...args);
     },
 
-    getValidAdminToken(audience) {
+    getValidAdminToken(audience, keyid = 0) {
         const jwt = require('jsonwebtoken');
         const JWT_OPTIONS = {
-            keyid: testUtils.DataGenerator.Content.api_keys[0].id,
+            keyid: testUtils.DataGenerator.Content.api_keys[keyid].id,
             algorithm: 'HS256',
             expiresIn: '5m',
             audience: audience
@@ -230,7 +232,7 @@ module.exports = {
 
         return jwt.sign(
             {},
-            Buffer.from(testUtils.DataGenerator.Content.api_keys[0].secret, 'hex'),
+            Buffer.from(testUtils.DataGenerator.Content.api_keys[keyid].secret, 'hex'),
             JWT_OPTIONS
         );
     },

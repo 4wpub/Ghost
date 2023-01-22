@@ -1,10 +1,11 @@
 const express = require('../../../../../shared/express');
 const api = require('../../../../api').endpoints;
-const http = require('../../../../api').shared.http;
+const {http} = require('@tryghost/api-framework');
 const apiMw = require('../../middleware');
 const mw = require('./middleware');
 
 const shared = require('../../../shared');
+const labs = require('../../../../../shared/labs');
 
 module.exports = function apiRoutes() {
     const router = express.Router('admin api');
@@ -30,6 +31,8 @@ module.exports = function apiRoutes() {
     router.get('/posts/slug/:slug', mw.authAdminApi, http(api.posts.read));
     router.put('/posts/:id', mw.authAdminApi, http(api.posts.edit));
     router.del('/posts/:id', mw.authAdminApi, http(api.posts.destroy));
+
+    router.get('/mentions', labs.enabledMiddleware('webmentions'), mw.authAdminApi, http(api.mentions.browse));
 
     router.put('/comments/:id', mw.authAdminApi, http(api.comments.edit));
 
@@ -65,13 +68,6 @@ module.exports = function apiRoutes() {
     router.get('/settings', mw.authAdminApi, http(api.settings.browse));
     router.put('/settings', mw.authAdminApi, http(api.settings.edit));
     router.put('/settings/verifications/', mw.authAdminApi, http(api.settings.verifyKeyUpdate));
-
-    /** @deprecated This endpoint is part of the old email verification flow for the support email */
-    router.get('/settings/members/email', http(api.settings.validateMembersEmailUpdate));
-    
-    /** @deprecated This endpoint is part of the old email verification flow for the support email */
-    router.post('/settings/members/email', mw.authAdminApi, http(api.settings.updateMembersEmail));
-
     router.del('/settings/stripe/connect', mw.authAdminApi, http(api.settings.disconnectStripeConnectIntegration));
 
     // ## Users
@@ -141,6 +137,8 @@ module.exports = function apiRoutes() {
     router.get('/stats/member_count', mw.authAdminApi, http(api.stats.memberCountHistory));
     router.get('/stats/mrr', mw.authAdminApi, http(api.stats.mrr));
     router.get('/stats/subscriptions', mw.authAdminApi, http(api.stats.subscriptions));
+    router.get('/stats/referrers/posts/:id', mw.authAdminApi, http(api.stats.postReferrers));
+    router.get('/stats/referrers', mw.authAdminApi, http(api.stats.referrersHistory));
 
     // ## Labels
     router.get('/labels', mw.authAdminApi, http(api.labels.browse));
@@ -162,6 +160,11 @@ module.exports = function apiRoutes() {
     router.get('/themes/:name/download',
         mw.authAdminApi,
         http(api.themes.download)
+    );
+
+    router.get('/themes/active',
+        mw.authAdminApi,
+        http(api.themes.readActive)
     );
 
     router.post('/themes/upload',
@@ -296,6 +299,8 @@ module.exports = function apiRoutes() {
     router.get('/emails', mw.authAdminApi, http(api.emails.browse));
     router.get('/emails/:id', mw.authAdminApi, http(api.emails.read));
     router.put('/emails/:id/retry', mw.authAdminApi, http(api.emails.retry));
+    router.get('/emails/:id/batches', mw.authAdminApi, http(api.emails.browseBatches));
+    router.get('/emails/:id/recipient-failures', mw.authAdminApi, http(api.emails.browseFailures));
 
     // ## Snippets
     router.get('/snippets', mw.authAdminApi, http(api.snippets.browse));
@@ -313,6 +318,9 @@ module.exports = function apiRoutes() {
     router.post('/newsletters', mw.authAdminApi, http(api.newsletters.add));
     router.put('/newsletters/verifications/', mw.authAdminApi, http(api.newsletters.verifyPropertyUpdate));
     router.put('/newsletters/:id', mw.authAdminApi, http(api.newsletters.edit));
+
+    router.get('/links', mw.authAdminApi, http(api.links.browse));
+    router.put('/links/bulk', mw.authAdminApi, http(api.links.bulkEdit));
 
     return router;
 };

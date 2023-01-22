@@ -2,7 +2,7 @@ module.exports = (event, model) => {
     const _ = require('lodash');
     const {sequence} = require('@tryghost/promise');
     const api = require('../../api').endpoints;
-    const apiShared = require('../../api').shared;
+    const apiFramework = require('@tryghost/api-framework');
 
     const resourceName = event.match(/(\w+)\./)[1];
     const docName = `${resourceName}s`;
@@ -13,7 +13,7 @@ module.exports = (event, model) => {
         ops.push(() => {
             let frame = {options: {previous: false, context: {user: true}}};
 
-            // NOTE: below options are lost in the during event processing, a more holistic approach would be
+            // @NOTE: below options are lost during event processing, a more holistic approach would be
             //       to pass them somehow along with the model
             if (['posts', 'pages'].includes(docName)) {
                 frame.options.formats = ['mobiledoc', 'html', 'plaintext'];
@@ -23,7 +23,7 @@ module.exports = (event, model) => {
                 };
             }
 
-            return apiShared
+            return apiFramework
                 .serializers
                 .handle
                 .output(model, {docName: docName, method: 'read'}, api.serializers.output, frame)
@@ -46,7 +46,7 @@ module.exports = (event, model) => {
                 frame.options.withRelated = ['tags', 'authors'];
             }
 
-            return apiShared
+            return apiFramework
                 .serializers
                 .handle
                 .output(model, {docName: docName, method: 'read'}, api.serializers.output, frame)

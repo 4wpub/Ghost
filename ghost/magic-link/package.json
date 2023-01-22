@@ -7,7 +7,8 @@
   "main": "index.js",
   "scripts": {
     "dev": "echo \"Implement me!\"",
-    "test": "NODE_ENV=testing c8 --all --reporter text --reporter cobertura mocha './test/**/*.test.js'",
+    "test:unit": "NODE_ENV=testing c8 --all --reporter text --reporter cobertura mocha './test/**/*.test.js'",
+    "test": "yarn test:unit",
     "lint": "eslint . --ext .js --cache"
   },
   "files": [
@@ -15,17 +16,17 @@
     "lib"
   ],
   "devDependencies": {
-    "@types/jsonwebtoken": "8.5.8",
-    "@types/node": "16.11.45",
-    "@types/nodemailer": "6.4.4",
+    "@types/jsonwebtoken": "8.5.9",
+    "@types/nodemailer": "6.4.7",
     "c8": "7.12.0",
-    "mocha": "10.0.0",
+    "mocha": "10.2.0",
     "should": "13.2.3",
-    "sinon": "14.0.0"
+    "sinon": "14.0.2"
   },
   "dependencies": {
-    "bluebird": "3.7.2",
-    "jsonwebtoken": "8.5.1",
-    "lodash": "4.17.21"
+    "@tryghost/errors": "1.2.20",
+    "@tryghost/tpl": "0.1.21",
+    "@tryghost/validator": "0.1.31",
+    "jsonwebtoken": "8.5.1"
   }
 }

@@ -8,11 +8,13 @@ const urlUtils = require('../../../shared/url-utils');
 const events = require('../../lib/common/events');
 const models = require('../../models');
 const {getConfig} = require('./config');
+const settingsHelpers = require('../settings-helpers');
 
 async function configureApi() {
-    const cfg = getConfig(settings, config, urlUtils);
+    const cfg = getConfig({settingsHelpers, config, urlUtils});
     if (cfg) {
-        cfg.testEnv = process.env.NODE_ENV.startsWith('test');
+        // @NOTE: to not start test mode when running playwright suite
+        cfg.testEnv = process.env.NODE_ENV.startsWith('test') && process.env.NODE_ENV !== 'testing-browser';
         await module.exports.configure(cfg);
         return true;
     }
@@ -20,7 +22,9 @@ async function configureApi() {
 }
 
 const debouncedConfigureApi = _.debounce(() => {
-    configureApi();
+    configureApi().catch((err) => {
+        logging.error(err);
+    });
 }, 600);
 
 module.exports = new StripeService({

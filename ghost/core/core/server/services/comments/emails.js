@@ -1,15 +1,17 @@
 const {promises: fs} = require('fs');
 const path = require('path');
 const moment = require('moment');
-const htmlToPlaintext = require('../../../shared/html-to-plaintext');
+const htmlToPlaintext = require('@tryghost/html-to-plaintext');
+const postEmailSerializer = require('../mega/post-email-serializer');
 
 class CommentsServiceEmails {
-    constructor({config, logging, models, mailer, settingsCache, urlService, urlUtils}) {
+    constructor({config, logging, models, mailer, settingsCache, settingsHelpers, urlService, urlUtils}) {
         this.config = config;
         this.logging = logging;
         this.models = models;
         this.mailer = mailer;
         this.settingsCache = settingsCache;
+        this.settingsHelpers = settingsHelpers;
         this.urlService = urlService;
         this.urlUtils = urlUtils;
 
@@ -26,7 +28,7 @@ class CommentsServiceEmails {
             }
 
             const to = author.get('email');
-            const subject = '💬 You have a new comment on one of your posts';
+            const subject = '💬 New comment on your post: ' + post.get('title');
 
             const memberName = member.get('name') || 'Anonymous';
 
@@ -39,12 +41,12 @@ class CommentsServiceEmails {
                 commentHtml: comment.get('html'),
                 commentDate: moment(comment.get('created_at')).tz(this.settingsCache.get('timezone')).format('D MMM YYYY'),
                 memberName: memberName,
-                memberBio: member.get('bio'),
+                memberExpertise: member.get('expertise'),
                 memberInitials: this.extractInitials(memberName),
                 accentColor: this.settingsCache.get('accent_color'),
                 fromEmail: this.notificationFromAddress,
                 toEmail: to,
-                staffUrl: `${this.urlUtils.getAdminUrl()}ghost/#/settings/staff/${author.get('slug')}`
+                staffUrl: this.urlUtils.urlJoin(this.urlUtils.urlFor('admin', true), '#', `/settings/staff/${author.get('slug')}`)
             };
 
             const {html, text} = await this.renderEmailTemplate('new-comment', templateData);
@@ -72,7 +74,7 @@ class CommentsServiceEmails {
         }
 
         const to = parentMember.get('email');
-        const subject = '💬 You have a new reply on one of your comments';
+        const subject = '↪️ New reply to your comment on ' + this.settingsCache.get('title');
 
         const post = await this.models.Post.findOne({id: reply.get('post_id')});
         const member = await this.models.Member.findOne({id: reply.get('member_id')});
@@ -88,12 +90,12 @@ class CommentsServiceEmails {
             replyHtml: reply.get('html'),
             replyDate: moment(reply.get('created_at')).tz(this.settingsCache.get('timezone')).format('D MMM YYYY'),
             memberName: memberName,
-            memberBio: member.get('bio'),
+            memberExpertise: member.get('expertise'),
             memberInitials: this.extractInitials(memberName),
             accentColor: this.settingsCache.get('accent_color'),
             fromEmail: this.notificationFromAddress,
             toEmail: to,
-            profileUrl: `${this.urlUtils.getSiteUrl()}#/portal/account/profile`
+            profileUrl: postEmailSerializer.createUnsubscribeUrl(member.get('uuid'), {comments: true})
         };
 
         const {html, text} = await this.renderEmailTemplate('new-comment-reply', templateData);
@@ -129,21 +131,21 @@ class CommentsServiceEmails {
             postTitle: post.get('title'),
             postUrl: this.urlService.getUrlByResourceId(post.get('id'), {absolute: true}),
             commentHtml: comment.get('html'),
-            commentText: htmlToPlaintext.email(comment.get('html')),
+            commentText: htmlToPlaintext.comment(comment.get('html')),
             commentDate: moment(comment.get('created_at')).tz(this.settingsCache.get('timezone')).format('D MMM YYYY'),
-            
+
             reporterName: reporter.name,
             reporterEmail: reporter.email,
             reporter: reporter.name ? `${reporter.name} (${reporter.email})` : reporter.email,
 
             memberName: memberName,
             memberEmail: member.get('email'),
-            memberBio: member.get('bio'),
+            memberExpertise: member.get('expertise'),
             memberInitials: this.extractInitials(memberName),
             accentColor: this.settingsCache.get('accent_color'),
             fromEmail: this.notificationFromAddress,
             toEmail: to,
-            staffUrl: `${this.urlUtils.getAdminUrl()}ghost/#/settings/staff/${owner.get('slug')}`
+            staffUrl: this.urlUtils.urlJoin(this.urlUtils.urlFor('admin', true), '#', `/settings/staff/${owner.get('slug')}`)
         };
 
         const {html, text} = await this.renderEmailTemplate('report', templateData);
@@ -165,25 +167,8 @@ class CommentsServiceEmails {
         return siteDomain;
     }
 
-    get membersAddress() {
-        // TODO: get from address of default newsletter?
-        return `noreply@${this.siteDomain}`;
-    }
-
-    // TODO: duplicated from services/members/config - exrtact to settings?
-    get supportAddress() {
-        const supportAddress = this.settingsCache.get('members_support_address') || 'noreply';
-
-        // Any fromAddress without domain uses site domain, like default setting `noreply`
-        if (supportAddress.indexOf('@') < 0) {
-            return `${supportAddress}@${this.siteDomain}`;
-        }
-
-        return supportAddress;
-    }
-
     get notificationFromAddress() {
-        return this.supportAddress || this.membersAddress;
+        return this.settingsHelpers.getMembersSupportAddress();
     }
 
     extractInitials(name = '') {

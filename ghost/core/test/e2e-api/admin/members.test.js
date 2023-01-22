@@ -1,15 +1,35 @@
 const {agentProvider, mockManager, fixtureManager, matchers} = require('../../utils/e2e-framework');
-const {anyEtag, anyObjectId, anyUuid, anyISODateTime, anyISODate, anyString, anyArray, anyLocationFor, anyErrorId, anyObject} = matchers;
-const ObjectId = require('bson-objectid');
+const {anyContentVersion, anyEtag, anyObjectId, anyUuid, anyISODateTime, anyISODate, anyString, anyArray, anyLocationFor, anyContentLength, anyErrorId, anyObject} = matchers;
+const ObjectId = require('bson-objectid').default;
 
 const assert = require('assert');
 const nock = require('nock');
 const should = require('should');
 const sinon = require('sinon');
 const testUtils = require('../../utils');
+const configUtils = require('../../utils/configUtils');
+
 const Papa = require('papaparse');
 
 const models = require('../../../core/server/models');
+const membersService = require('../../../core/server/services/members');
+const memberAttributionService = require('../../../core/server/services/member-attribution');
+const urlService = require('../../../core/server/services/url');
+const urlUtils = require('../../../core/shared/url-utils');
+const settingsCache = require('../../../core/shared/settings-cache');
+const DomainEvents = require('@tryghost/domain-events');
+
+/**
+ * Assert that haystack and needles match, ignoring the order.
+ */
+function matchArrayWithoutOrder(haystack, needles) {
+    // Order shouldn't matter here
+    for (const a of needles) {
+        haystack.should.matchAny(a);
+    }
+
+    assert.equal(haystack.length, needles.length, `Expected ${needles.length} items, but got ${haystack.length}`);
+}
 
 async function assertMemberEvents({eventType, memberId, asserts}) {
     const events = await models[eventType].where('member_id', memberId).fetchAll();
@@ -32,6 +52,10 @@ async function assertSubscription(subscriptionId, asserts) {
 
 async function getPaidProduct() {
     return await models.Product.findOne({type: 'paid'});
+}
+
+async function getOtherPaidProduct() {
+    return (await models.Product.findAll({type: 'paid'})).models[0];
 }
 
 async function getNewsletters() {
@@ -140,6 +164,7 @@ describe('Members API without Stripe', function () {
             .body({members: [newMember]})
             .expectStatus(422)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -150,12 +175,271 @@ describe('Members API without Stripe', function () {
     });
 });
 
+// Tests specific for member attribution
+describe('Members API - member attribution', function () {
+    const signupAttributions = [];
+
+    before(async function () {
+        agent = await agentProvider.getAdminAPIAgent();
+        await fixtureManager.init('posts', 'newsletters', 'members:newsletters', 'comments');
+        await agent.loginAsOwner();
+        // This is required so that the only members in this test are created by this test, and not from fixtures.
+        await models.Member.query().del();
+    });
+
+    beforeEach(function () {
+        mockManager.mockStripe();
+        mockManager.mockMail();
+
+        // For some reason it is enabled by default?
+        mockManager.mockLabsEnabled('memberAttribution');
+    });
+
+    afterEach(function () {
+        mockManager.restore();
+    });
+
+    it('Can read member attributed to a post', async function () {
+        const id = fixtureManager.get('posts', 0).id;
+        const post = await models.Post.where('id', id).fetch({require: true});
+
+        // Set the attribution for this member manually
+        const member = await membersService.api.members.create({
+            email: 'member-attributed-to-post@test.com',
+            attribution: memberAttributionService.attributionBuilder.build({
+                id,
+                url: '/out-of-date/',
+                type: 'post',
+                referrerSource: null,
+                referrerMedium: null,
+                referrerUrl: null
+            })
+        });
+
+        const absoluteUrl = urlService.getUrlByResourceId(post.id, {absolute: true});
+
+        await agent
+            .get(`/members/${member.id}/`)
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(1).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .expect(({body}) => {
+                should(body.members[0].attribution).eql({
+                    id: post.id,
+                    url: absoluteUrl,
+                    type: 'post',
+                    title: post.get('title'),
+                    referrer_source: null,
+                    referrer_medium: null,
+                    referrer_url: null
+                });
+                signupAttributions.push(body.members[0].attribution);
+            });
+    });
+
+    it('Can read member attributed to a page', async function () {
+        const id = fixtureManager.get('posts', 5).id;
+        const post = await models.Post.where('id', id).fetch({require: true});
+
+        // Set the attribution for this member manually
+        const member = await membersService.api.members.create({
+            email: 'member-attributed-to-page@test.com',
+            attribution: memberAttributionService.attributionBuilder.build({
+                id,
+                url: '/out-of-date/',
+                type: 'page',
+                referrerSource: null,
+                referrerMedium: null,
+                referrerUrl: null
+            })
+        });
+
+        const absoluteUrl = urlService.getUrlByResourceId(post.id, {absolute: true});
+
+        await agent
+            .get(`/members/${member.id}/`)
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(1).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .expect(({body}) => {
+                should(body.members[0].attribution).eql({
+                    id: post.id,
+                    url: absoluteUrl,
+                    type: 'page',
+                    title: post.get('title'),
+                    referrer_source: null,
+                    referrer_medium: null,
+                    referrer_url: null
+                });
+                signupAttributions.push(body.members[0].attribution);
+            });
+    });
+
+    it('Can read member attributed to a tag', async function () {
+        const id = fixtureManager.get('tags', 0).id;
+        const tag = await models.Tag.where('id', id).fetch({require: true});
+
+        // Set the attribution for this member manually
+        const member = await membersService.api.members.create({
+            email: 'member-attributed-to-tag@test.com',
+            attribution: memberAttributionService.attributionBuilder.build({
+                id,
+                url: '/out-of-date/',
+                type: 'tag',
+                referrerSource: null,
+                referrerMedium: null,
+                referrerUrl: null
+            })
+        });
+
+        const absoluteUrl = urlService.getUrlByResourceId(tag.id, {absolute: true});
+
+        await agent
+            .get(`/members/${member.id}/`)
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(1).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .expect(({body}) => {
+                should(body.members[0].attribution).eql({
+                    id: tag.id,
+                    url: absoluteUrl,
+                    type: 'tag',
+                    title: tag.get('name'),
+                    referrer_source: null,
+                    referrer_medium: null,
+                    referrer_url: null
+                });
+                signupAttributions.push(body.members[0].attribution);
+            });
+    });
+
+    it('Can read member attributed to an author', async function () {
+        const id = fixtureManager.get('users', 0).id;
+        const author = await models.User.where('id', id).fetch({require: true});
+
+        // Set the attribution for this member manually
+        const member = await membersService.api.members.create({
+            email: 'member-attributed-to-author@test.com',
+            attribution: memberAttributionService.attributionBuilder.build({
+                id,
+                url: '/out-of-date/',
+                type: 'author',
+                referrerSource: null,
+                referrerMedium: null,
+                referrerUrl: null
+            })
+        });
+
+        const absoluteUrl = urlService.getUrlByResourceId(author.id, {absolute: true});
+
+        await agent
+            .get(`/members/${member.id}/`)
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(1).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .expect(({body}) => {
+                should(body.members[0].attribution).eql({
+                    id: author.id,
+                    url: absoluteUrl,
+                    type: 'author',
+                    title: author.get('name'),
+                    referrer_source: null,
+                    referrer_medium: null,
+                    referrer_url: null
+                });
+                signupAttributions.push(body.members[0].attribution);
+            });
+    });
+
+    it('Can read member attributed to an url', async function () {
+        // Set the attribution for this member manually
+        const member = await membersService.api.members.create({
+            email: 'member-attributed-to-url@test.com',
+            attribution: memberAttributionService.attributionBuilder.build({
+                id: null,
+                url: '/a-static-page/',
+                type: 'url',
+                referrerSource: null,
+                referrerMedium: null,
+                referrerUrl: null
+            })
+        });
+
+        const absoluteUrl = urlUtils.createUrl('/a-static-page/', true);
+
+        await agent
+            .get(`/members/${member.id}/`)
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(1).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .expect(({body}) => {
+                should(body.members[0].attribution).eql({
+                    id: null,
+                    url: absoluteUrl,
+                    type: 'url',
+                    title: '/a-static-page/',
+                    referrer_source: null,
+                    referrer_medium: null,
+                    referrer_url: null
+                });
+                signupAttributions.push(body.members[0].attribution);
+            });
+    });
+
+    // Activity feed
+    it('Returns sign up attributions of all types in activity feed', async function () {
+        // Check activity feed
+        await agent
+            .get(`/members/events/?filter=type:signup_event`)
+            .expectStatus(200)
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .matchBodySnapshot({
+                events: new Array(signupAttributions.length).fill({
+                    type: anyString,
+                    data: anyObject
+                })
+            })
+            .expect(({body}) => {
+                should(body.events.find(e => e.type !== 'signup_event')).be.undefined();
+                should(body.events.map(e => e.data.attribution)).containDeep(signupAttributions);
+            });
+    });
+});
+
 describe('Members API', function () {
     let newsletters;
 
     before(async function () {
         agent = await agentProvider.getAdminAPIAgent();
-        await fixtureManager.init('posts', 'newsletters', 'members:newsletters', 'comments');
+        await fixtureManager.init('posts', 'newsletters', 'members:newsletters', 'comments', 'redirects', 'clicks');
         await agent.loginAsOwner();
 
         newsletters = await getNewsletters();
@@ -170,26 +454,6 @@ describe('Members API', function () {
         mockManager.restore();
     });
 
-    // Activity feed
-    it('Returns comments in activity feed', async function () {
-        // Check activity feed
-        await agent
-            .get(`/members/events`)
-            .expectStatus(200)
-            .matchHeaderSnapshot({
-                etag: anyEtag
-            })
-            .matchBodySnapshot({
-                events: new Array(5).fill({
-                    type: anyString,
-                    data: anyObject
-                })
-            })
-            .expect(({body}) => {
-                should(body.events.find(e => e.type === 'comment_event')).not.be.undefined();
-            });
-    });
-
     // List Members
 
     it('Can browse', async function () {
@@ -200,6 +464,7 @@ describe('Members API', function () {
                 members: new Array(8).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -212,6 +477,33 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            });
+    });
+
+    it('Can filter by signup attribution', async function () {
+        await agent
+            .get('/members/?filter=signup:' + fixtureManager.get('posts', 0).id)
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(3).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            });
+    });
+
+    it('Can filter by signup attribution', async function () {
+        await agent
+            .get('/members/?filter=conversion:' + fixtureManager.get('posts', 0).id)
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(1).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -224,6 +516,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -236,6 +529,7 @@ describe('Members API', function () {
                 members: new Array(5).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -248,6 +542,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -260,6 +555,7 @@ describe('Members API', function () {
                 members: new Array(5).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -270,7 +566,8 @@ describe('Members API', function () {
             .expectStatus(200)
             .matchHeaderSnapshot({
                 etag: anyEtag,
-                'content-length': anyString
+                'content-length': anyContentLength,
+                'content-version': anyContentVersion
             })
             .matchBodySnapshot({
                 members: new Array(8).fill(memberMatcherShallowIncludes)
@@ -285,7 +582,8 @@ describe('Members API', function () {
             .expectStatus(200)
             .matchHeaderSnapshot({
                 etag: anyEtag,
-                'content-length': anyString
+                'content-length': anyContentLength,
+                'content-version': anyContentVersion
             })
             .matchBodySnapshot({
                 members: new Array(8).fill(memberMatcherShallowIncludes)
@@ -304,6 +602,7 @@ describe('Members API', function () {
                 members: [memberMatcherShallowIncludes]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -316,6 +615,7 @@ describe('Members API', function () {
                 members: [memberMatcherShallowIncludes]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -328,6 +628,7 @@ describe('Members API', function () {
                 members: [memberMatcherShallowIncludes]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -337,6 +638,7 @@ describe('Members API', function () {
             .get('members/?search=do_not_exist')
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -354,6 +656,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -366,6 +669,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -378,6 +682,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(buildMemberMatcherShallowIncludesWithTiers())
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -401,6 +706,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -421,6 +727,71 @@ describe('Members API', function () {
                 }
             ]
         });
+    });
+
+    it('Can add a member and trigger host email verification limits', async function () {
+        configUtils.set('hostSettings:emailVerification', {
+            apiThreshold: 0,
+            adminThreshold: 1,
+            importThreshold: 0,
+            verified: false,
+            escalationAddress: 'test@example.com'
+        });
+
+        assert.ok(!settingsCache.get('email_verification_required'), 'Email verification should NOT be required');
+
+        const member = {
+            name: 'pass verification',
+            email: 'memberPassVerifivation@test.com'
+        };
+
+        const {body: passBody} = await agent
+            .post(`/members/`)
+            .body({members: [member]})
+            .expectStatus(201)
+            .matchBodySnapshot({
+                members: new Array(1).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag,
+                location: anyLocationFor('members')
+            });
+        const memberPassVerification = passBody.members[0];
+
+        await DomainEvents.allSettled();
+        assert.ok(!settingsCache.get('email_verification_required'), 'Email verification should NOT be required');
+
+        const memberFailLimit = {
+            name: 'fail verification',
+            email: 'memberFailVerifivation@test.com'
+        };
+
+        const {body: failBody} = await agent
+            .post(`/members/`)
+            .body({members: [memberFailLimit]})
+            .expectStatus(201)
+            .matchBodySnapshot({
+                members: new Array(1).fill(memberMatcherShallowIncludes)
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag,
+                location: anyLocationFor('members')
+            });
+        const memberFailVerification = failBody.members[0];
+
+        await DomainEvents.allSettled();
+        assert.ok(settingsCache.get('email_verification_required'), 'Email verification should be required');
+        mockManager.assert.sentEmail({
+            subject: 'Email needs verification'
+        });
+
+        // state cleanup
+        await agent.delete(`/members/${memberPassVerification.id}`);
+        await agent.delete(`/members/${memberFailVerification.id}`);
+
+        configUtils.restore();
     });
 
     it('Can add and send a signup confirmation email', async function () {
@@ -445,6 +816,7 @@ describe('Members API', function () {
                 ]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyString
             });
@@ -488,6 +860,7 @@ describe('Members API', function () {
         await agent
             .delete(`members/${body.members[0].id}/`)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .expectStatus(204);
@@ -513,6 +886,7 @@ describe('Members API', function () {
             .body({members: [newMember]})
             .expectStatus(422)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -583,13 +957,14 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
 
         const newMember = body.members[0];
 
-        await agent
+        const updatedMember = await agent
             .put(`/members/${newMember.id}/`)
             .body({members: [compedPayload]})
             .expectStatus(200)
@@ -597,6 +972,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(buildMemberMatcherShallowIncludesWithTiers(1))
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -763,7 +1139,7 @@ describe('Members API', function () {
         });
     });
 
-    it('Can create a new member with a product (complementary)', async function () {
+    it('Can create a new member with a product (complimentary)', async function () {
         const product = await getPaidProduct();
         const initialMember = {
             name: 'Name',
@@ -800,6 +1176,7 @@ describe('Members API', function () {
                 })
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -915,6 +1292,7 @@ describe('Members API', function () {
                 })
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -1038,11 +1416,12 @@ describe('Members API', function () {
                     updated_at: anyISODateTime,
                     labels: anyArray,
                     subscriptions: anyArray,
-                    tiers: anyArray,
+                    tiers: new Array(1).fill(tierMatcher),
                     newsletters: new Array(1).fill(newsletterSnapshot)
                 })
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -1096,7 +1475,7 @@ describe('Members API', function () {
             mrr: 100
         });
 
-        // Save this member for the next test
+        // Save this member for the next tests
         memberWithPaidSubscription = newMember;
     });
 
@@ -1116,9 +1495,130 @@ describe('Members API', function () {
         assert.equal(browseBody.members.length, 1, 'The member was not found in browse');
         const browseMember = browseBody.members[0];
 
+        // Ignore attribution for now
+        delete readMember.attribution;
+        for (const sub of readMember.subscriptions) {
+            delete sub.attribution;
+        }
+
+        // Ignore attribution for now
+        delete memberWithPaidSubscription.attribution;
+        for (const sub of memberWithPaidSubscription.subscriptions) {
+            delete sub.attribution;
+        }
+
         // Check for this member with a paid subscription that the body results for the patch, get and browse endpoints are 100% identical
         should.deepEqual(browseMember, readMember, 'Browsing a member returns a different format than reading a member');
         should.deepEqual(memberWithPaidSubscription, readMember, 'Editing a member returns a different format than reading a member');
+    });
+
+    it('Cannot add complimentary subscriptions to a member with an active subscription', async function () {
+        if (!memberWithPaidSubscription) {
+            // Previous test failed
+            this.skip();
+        }
+        const product = await getOtherPaidProduct();
+
+        const compedPayload = {
+            id: memberWithPaidSubscription.id,
+            tiers: [
+                ...memberWithPaidSubscription.tiers,
+                {
+                    id: product.id
+                }
+            ]
+        };
+
+        await agent
+            .put(`/members/${memberWithPaidSubscription.id}/`)
+            .body({members: [compedPayload]})
+            .expectStatus(400);
+    });
+
+    it('Cannot remove non complimentary subscriptions directly from a member', async function () {
+        if (!memberWithPaidSubscription) {
+            // Previous test failed
+            this.skip();
+        }
+
+        const compedPayload = {
+            id: memberWithPaidSubscription.id,
+            // Remove all paid subscriptions (= not allowed atm)
+            tiers: []
+        };
+
+        await agent
+            .put(`/members/${memberWithPaidSubscription.id}/`)
+            .body({members: [compedPayload]})
+            .expectStatus(400);
+    });
+
+    it('Can remove a complimentary subscription directly from a member with other active subscriptions', async function () {
+        // This tests for an edge case that shouldn't be possible, but the API should support this to resolve issues
+        // refs https://github.com/TryGhost/Team/issues/1859
+
+        if (!memberWithPaidSubscription) {
+            // Previous test failed
+            this.skip();
+        }
+
+        // Check that the product that we are going to add is not the same as the existing one
+        const product = await getOtherPaidProduct();
+        should(memberWithPaidSubscription.tiers).have.length(1);
+        should(memberWithPaidSubscription.tiers[0].id).not.eql(product.id);
+
+        // Add it manually
+        const member = await models.Member.edit({
+            products: [
+                ...memberWithPaidSubscription.tiers,
+                {
+                    id: product.id
+                }
+            ]
+        }, {id: memberWithPaidSubscription.id});
+
+        // Check status
+        const {body: body2} = await agent
+            .get(`/members/${memberWithPaidSubscription.id}/`)
+            .expectStatus(200);
+
+        const beforeMember = body2.members[0];
+        assert.equal(beforeMember.tiers.length, 2, 'The member should have two tiers now');
+
+        // Now try to remove only the complimentary one
+        const compedPayload = {
+            id: memberWithPaidSubscription.id,
+            // Remove all complimentary subscriptions
+            tiers: memberWithPaidSubscription.tiers
+        };
+
+        const {body} = await agent
+            .put(`/members/${memberWithPaidSubscription.id}/`)
+            .body({members: [compedPayload]})
+            .expectStatus(200);
+
+        const updatedMember = body.members[0];
+        assert.equal(updatedMember.status, 'paid', 'Member should still have the paid status');
+        assert.equal(updatedMember.tiers.length, 1, 'The member should have one product now');
+        assert.equal(updatedMember.tiers[0].id, memberWithPaidSubscription.tiers[0].id, 'The member should have the paid product');
+    });
+
+    it('Can keep tiers unchanged when modifying a paid member', async function () {
+        if (!memberWithPaidSubscription) {
+            // Previous test failed
+            this.skip();
+        }
+
+        const compedPayload = {
+            id: memberWithPaidSubscription.id,
+            // Not changed tiers
+            tiers: [...memberWithPaidSubscription.tiers]
+        };
+
+        await agent
+            .put(`/members/${memberWithPaidSubscription.id}/`)
+            .body({members: [compedPayload]})
+            .expectStatus(200);
     });
 
     it('Can edit by id', async function () {
@@ -1146,6 +1646,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -1177,6 +1678,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -1224,6 +1726,7 @@ describe('Members API', function () {
                 }]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -1244,6 +1747,7 @@ describe('Members API', function () {
                 }]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -1272,6 +1776,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -1290,7 +1795,7 @@ describe('Members API', function () {
             }]
         });
 
-        // Wait 5 second sto guarantee event ordering
+        // Wait 5 seconds to guarantee event ordering
         clock.tick(5000);
 
         const after = new Date();
@@ -1304,6 +1809,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -1338,11 +1844,14 @@ describe('Members API', function () {
             .body({members: [memberChanged]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
         const events = eventsBody.events;
-        events.should.match([
+
+        // The order will be different in each test because two newsletter_events have the same created_at timestamp. And events are ordered by created_at desc, id desc (id will be different each time).
+        matchArrayWithoutOrder(events, [
             {
                 type: 'newsletter_event',
                 data: {
@@ -1366,6 +1875,9 @@ describe('Members API', function () {
                 }
             },
             {
+                type: 'signup_event'
+            },
+            {
                 type: 'newsletter_event',
                 data: {
                     subscribed: true,
@@ -1375,9 +1887,6 @@ describe('Members API', function () {
                         id: newsletters[0].id
                     }
                 }
-            },
-            {
-                type: 'signup_event'
             }
         ]);
 
@@ -1401,6 +1910,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -1486,6 +1996,7 @@ describe('Members API', function () {
                 })
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -1505,8 +2016,111 @@ describe('Members API', function () {
                 })
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
+    });
+
+    it('Can edit a subscription', async function () {
+        const memberId = testUtils.DataGenerator.Content.members[1].id;
+        const price = testUtils.DataGenerator.Content.stripe_prices[0];
+        const stripeCustomerId = 'cus_GbEMMOZNVrL450';
+        const stripeSubscriptionId = 'sub_K1cBgJt6sCMu5n';
+
+        const stripeSubscriptionFixture = ({status = 'active'} = {}) => {
+            const now = Math.floor(Date.now() / 1000);
+            return {
+                id: stripeSubscriptionId,
+                customer: stripeCustomerId,
+                cancel_at_period_end: false,
+                items: {
+                    data: [{
+                        price: {
+                            id: price.stripe_price_id,
+                            recurring: {
+                                interval: price.interval
+                            },
+                            unit_amount: price.amount,
+                            currency: price.currency.toLowerCase()
+                        }
+                    }]
+                },
+                status: status,
+                current_period_end: now + 24 * 3600,
+                start_date: now
+            };
+        };
+
+        nock('https://api.stripe.com:443')
+            .post('/v1/customers')
+            .reply(200, {
+                id: `cus_GbEMMOZNVrL450`,
+                email: 'member1@test.com'
+            });
+
+        nock('https://api.stripe.com:443')
+            .get(`/v1/subscriptions/${stripeSubscriptionId}`)
+            .reply(200, stripeSubscriptionFixture());
+
+        nock('https://api.stripe.com:443')
+            .post('/v1/subscriptions')
+            .reply(200, stripeSubscriptionFixture());
+
+        const res = await agent
+            .post(`/members/${memberId}/subscriptions/`)
+            .body({
+                stripe_price_id: price.id
+            })
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(1).fill({
+                    id: anyObjectId,
+                    uuid: anyUuid,
+                    created_at: anyISODateTime,
+                    updated_at: anyISODateTime,
+                    labels: anyArray,
+                    subscriptions: [subscriptionSnapshot],
+                    newsletters: anyArray
+                })
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            });
+
+        const subscriptionId = res.body.members[0].subscriptions[0].id;
+
+        nock('https://api.stripe.com:443')
+            .delete(`/v1/subscriptions/${stripeSubscriptionId}`)
+            .reply(200, stripeSubscriptionFixture({status: 'canceled'}));
+
+        nock('https://api.stripe.com:443')
+            .get(`/v1/subscriptions/${stripeSubscriptionId}`)
+            .reply(200, stripeSubscriptionFixture({status: 'canceled'}));
+
+        const editRes = await agent
+            .put(`/members/${memberId}/subscriptions/${subscriptionId}`)
+            .body({
+                status: 'canceled'
+            })
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: new Array(1).fill({
+                    id: anyObjectId,
+                    uuid: anyUuid,
+                    created_at: anyISODateTime,
+                    updated_at: anyISODateTime,
+                    labels: anyArray,
+                    subscriptions: [subscriptionSnapshot],
+                    newsletters: anyArray
+                })
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            });
+
+        assert.equal('canceled', editRes.body.members[0].subscriptions[0].status);
     });
 
     // Delete a member
@@ -1525,6 +2139,7 @@ describe('Members API', function () {
                 members: new Array(1).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -1536,6 +2151,7 @@ describe('Members API', function () {
             .expectStatus(204)
             .expectEmptyBody()
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -1548,6 +2164,22 @@ describe('Members API', function () {
                 }]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            });
+    });
+
+    it('Cannot delete a non-existent member', async function () {
+        await agent
+            .delete('/members/abcd1234abcd1234abcd1234')
+            .expectStatus(404)
+            .matchBodySnapshot({
+                errors: [{
+                    id: anyUuid
+                }]
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -1581,6 +2213,7 @@ describe('Members API', function () {
             .expectStatus(204)
             .expectEmptyBody()
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -1596,18 +2229,19 @@ describe('Members API', function () {
             .expectEmptyBody() // express-test body parsing doesn't support CSV
             .matchHeaderSnapshot({
                 etag: anyEtag,
-                'content-length': anyString, //For some reason the content-length changes between 1220 and 1317
+                'content-version': anyContentVersion,
+                'content-length': anyContentLength,
                 'content-disposition': anyString
             });
 
-        res.text.should.match(/id,email,name,note,subscribed_to_emails,complimentary_plan,stripe_customer_id,created_at,deleted_at,labels,products/);
+        res.text.should.match(/id,email,name,note,subscribed_to_emails,complimentary_plan,stripe_customer_id,created_at,deleted_at,labels,tiers/);
 
         const csv = Papa.parse(res.text, {header: true});
         should.exist(csv.data.find(row => row.name === 'Mr Egg'));
         should.exist(csv.data.find(row => row.name === 'Winston Zeddemore'));
         should.exist(csv.data.find(row => row.name === 'Ray Stantz'));
         should.exist(csv.data.find(row => row.email === 'member2@test.com'));
-        should.exist(csv.data.find(row => row.products.length > 0));
+        should.exist(csv.data.find(row => row.tiers.length > 0));
         should.exist(csv.data.find(row => row.labels.length > 0));
     });
 
@@ -1618,17 +2252,18 @@ describe('Members API', function () {
             .expectEmptyBody() // express-test body parsing doesn't support CSV
             .matchHeaderSnapshot({
                 etag: anyEtag,
+                'content-version': anyContentVersion,
                 'content-disposition': anyString
             });
 
-        res.text.should.match(/id,email,name,note,subscribed_to_emails,complimentary_plan,stripe_customer_id,created_at,deleted_at,labels,products/);
+        res.text.should.match(/id,email,name,note,subscribed_to_emails,complimentary_plan,stripe_customer_id,created_at,deleted_at,labels,tiers/);
 
         const csv = Papa.parse(res.text, {header: true});
         should.exist(csv.data.find(row => row.name === 'Mr Egg'));
         should.not.exist(csv.data.find(row => row.name === 'Egon Spengler'));
         should.not.exist(csv.data.find(row => row.name === 'Ray Stantz'));
         should.not.exist(csv.data.find(row => row.email === 'member2@test.com'));
-        // note that this member doesn't have products
+        // note that this member doesn't have tiers
         should.exist(csv.data.find(row => row.labels.length > 0));
     });
 
@@ -1644,6 +2279,7 @@ describe('Members API', function () {
                 }]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -1653,6 +2289,7 @@ describe('Members API', function () {
             .get('members/stats/?days=nope')
             .expectStatus(422)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -1670,6 +2307,7 @@ describe('Members API', function () {
                 members: new Array(4).fill(memberMatcherShallowIncludes)
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -1682,6 +2320,7 @@ describe('Members API', function () {
                 members: new Array(8).fill(buildMemberMatcherShallowIncludesWithTiers())
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -1714,6 +2353,7 @@ describe('Members API', function () {
                 }]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -1740,6 +2380,7 @@ describe('Members API', function () {
                 }]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -1747,6 +2388,77 @@ describe('Members API', function () {
             .post(`/members/`)
             .body({members: [member]})
             .expectStatus(422);
+    });
+
+    it('Setting subscribed when editing a member won\'t reset to default newsletters', async function () {
+        // First check that this newsletter is off by default, or this test would not make sense
+        const newsletter = await models.Newsletter.findOne({id: testUtils.DataGenerator.Content.newsletters[0].id}, {require: true});
+        assert.equal(newsletter.get('subscribe_on_signup'), false, 'This test expects the newsletter to be off by default');
+
+        // Add custom newsletter list to new member
+        const member = {
+            name: 'test newsletter',
+            email: 'memberTestChangeSubscribedAttribute@test.com',
+            newsletters: [
+                {
+                    id: testUtils.DataGenerator.Content.newsletters[0].id // This is off by default
+                },
+                {
+                    id: testUtils.DataGenerator.Content.newsletters[1].id
+                }
+            ]
+        };
+
+        const {body} = await agent
+            .post(`/members/`)
+            .body({members: [member]})
+            .expectStatus(201)
+            .matchBodySnapshot({
+                members: [{
+                    id: anyObjectId,
+                    uuid: anyUuid,
+                    created_at: anyISODateTime,
+                    updated_at: anyISODateTime,
+                    subscriptions: anyArray,
+                    labels: anyArray,
+                    newsletters: Array(2).fill(newsletterSnapshot)
+                }]
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag,
+                location: anyLocationFor('members')
+            });
+
+        const memberId = body.members[0].id;
+        const editedMember = {
+            subscribed: true // no change
+        };
+
+        // Edit member
+        const {body: body2} = await agent
+            .put(`/members/${memberId}`)
+            .body({members: [editedMember]})
+            .expectStatus(200)
+            .matchBodySnapshot({
+                members: [{
+                    id: anyObjectId,
+                    uuid: anyUuid,
+                    created_at: anyISODateTime,
+                    updated_at: anyISODateTime,
+                    subscriptions: anyArray,
+                    labels: anyArray,
+                    newsletters: Array(2).fill(newsletterSnapshot)
+                }]
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            });
+        const changedMember = body2.members[0];
+        assert.equal(changedMember.newsletters.length, 2);
+        assert.ok(changedMember.newsletters.find(n => n.id === testUtils.DataGenerator.Content.newsletters[0].id), 'The member is still subscribed for a newsletter that is off by default');
+        assert.ok(changedMember.newsletters.find(n => n.id === testUtils.DataGenerator.Content.newsletters[1].id), 'The member is still subscribed for the newsletter it subscribed to');
     });
 
     it('Can add and send a signup confirmation email (old)', async function () {
@@ -1772,6 +2484,7 @@ describe('Members API', function () {
                 ]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyString
             });
@@ -1810,6 +2523,7 @@ describe('Members API', function () {
         await agent
             .delete(`members/${body.members[0].id}/`)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .expectStatus(204);
@@ -1845,6 +2559,7 @@ describe('Members API', function () {
                 ]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyString
             });
@@ -1900,6 +2615,7 @@ describe('Members API', function () {
                 ]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -1935,6 +2651,7 @@ describe('Members API', function () {
                 ]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -1982,6 +2699,7 @@ describe('Members API', function () {
                 ]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('members')
             });
@@ -2013,6 +2731,7 @@ describe('Members API', function () {
                 ]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -2072,6 +2791,7 @@ describe('Members API Bulk operations', function () {
                 }
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -2099,8 +2819,41 @@ describe('Members API Bulk operations', function () {
                 }
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
+    });
+
+    it('Can bulk unsubscribe members from specific newsletter', async function () {
+        const member = fixtureManager.get('members', 4);
+        const newsletterCount = 2;
+
+        const model = await models.Member.findOne({id: member.id}, {withRelated: 'newsletters'});
+        should(model.relations.newsletters.models.length).equal(newsletterCount, 'This test requires a member with 2 or more newsletters');
+
+        await agent
+            .put(`/members/bulk/?all=true`)
+            .body({bulk: {
+                action: 'unsubscribe',
+                newsletter: model.relations.newsletters.models[0].id,
+                meta: {}
+            }})
+            .expectStatus(200)
+            .matchBodySnapshot({
+                bulk: {
+                    meta: {
+                        stats: {
+                            successful: 4,
+                            unsuccessful: 0
+                        },
+                        unsuccessfulData: [],
+                        errors: []
+                    }
+                }
+            });
+        const updatedModel = await models.Member.findOne({id: member.id}, {withRelated: 'newsletters'});
+        // ensure they were unsubscribed from the single 'chosen' newsletter
+        should(updatedModel.relations.newsletters.models.length).equal(newsletterCount - 1);
     });
 
     it('Can bulk unsubscribe members with deprecated subscribed filter', async function () {
@@ -2123,6 +2876,7 @@ describe('Members API Bulk operations', function () {
                 }
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -2150,6 +2904,7 @@ describe('Members API Bulk operations', function () {
                 }
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -2189,6 +2944,7 @@ describe('Members API Bulk operations', function () {
                 }
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -2216,6 +2972,7 @@ describe('Members API Bulk operations', function () {
                 }
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -2256,6 +3013,7 @@ describe('Members API Bulk operations', function () {
                 }
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -2305,6 +3063,7 @@ describe('Members API Bulk operations', function () {
                 }
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -2313,5 +3072,21 @@ describe('Members API Bulk operations', function () {
 
         const updatedModel2 = await models.Member.findOne({id: member2.id}, {withRelated: 'labels'});
         should(updatedModel2.relations.labels.models.map(m => m.id)).match([firstId, secondId]);
+    });
+
+    it('Can bulk delete members', async function () {
+        await agent
+            .delete('/members?all=true')
+            .expectStatus(200)
+            .matchBodySnapshot({
+                meta: {
+                    stats: {
+                        successful: 8,
+                        unsuccessful: 0
+                    },
+                    unsuccessfulIds: [],
+                    errors: []
+                }
+            });
     });
 });

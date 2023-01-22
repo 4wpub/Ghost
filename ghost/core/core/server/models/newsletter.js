@@ -1,5 +1,5 @@
 const ghostBookshelf = require('./base');
-const ObjectID = require('bson-objectid');
+const ObjectID = require('bson-objectid').default;
 const uuid = require('uuid');
 const urlUtils = require('../../shared/url-utils');
 
@@ -21,7 +21,8 @@ const Newsletter = ghostBookshelf.Model.extend({
             show_badge: true,
             show_header_icon: true,
             show_header_title: true,
-            show_header_name: true
+            show_header_name: true,
+            feedback_enabled: false
         };
     },
 
@@ -124,6 +125,27 @@ const Newsletter = ghostBookshelf.Model.extend({
         }
 
         return options;
+    },
+
+    countRelations() {
+        return {
+            posts(modelOrCollection) {
+                modelOrCollection.query('columns', 'newsletters.*', (qb) => {
+                    qb.count('posts.id')
+                        .from('posts')
+                        .whereRaw('posts.newsletter_id = newsletters.id')
+                        .as('count__posts');
+                });
+            },
+            members(modelOrCollection) {
+                modelOrCollection.query('columns', 'newsletters.*', (qb) => {
+                    qb.count('members_newsletters.id')
+                        .from('members_newsletters')
+                        .whereRaw('members_newsletters.newsletter_id = newsletters.id')
+                        .as('count__members');
+                });
+            }
+        };
     },
 
     orderDefaultRaw: function () {

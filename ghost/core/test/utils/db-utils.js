@@ -16,7 +16,7 @@ const schemaTables = Object.keys(schema);
 // Other Test Utilities
 const urlServiceUtils = require('./url-service-utils');
 
-const dbHash = Date.now();
+let dbInitialized = false;
 
 /**
  * Checks if the current active connection is a MySQL database
@@ -43,21 +43,22 @@ module.exports.isSQLite = () => {
  * @param {Boolean} options.truncate whether to truncate rather thann fully reset
  */
 module.exports.reset = async ({truncate} = {truncate: false}) => {
-    // Only run this copy in CI until it gets fleshed out
-    if (process.env.CI && module.exports.isSQLite()) {
+    if (module.exports.isSQLite()) {
         const filename = config.get('database:connection:filename');
-        const filenameOrig = `${filename}.${dbHash}-orig`;
+        const filenameOrig = `${filename}-orig`;
 
-        const dbExists = await fs.pathExists(filenameOrig);
-
-        if (dbExists) {
-            await db.knex.destroy();
+        if (dbInitialized) {
             await fs.copyFile(filenameOrig, filename);
         } else {
+            await fs.remove(filename);
+            await fs.remove(`${filename}-journal`);
+            await fs.remove(filenameOrig);
+
             // Do a full database reset & initialisation
             await forceReinit();
 
             await fs.copyFile(filename, filenameOrig);
+            dbInitialized = true;
         }
     } else {
         if (truncate) {
@@ -195,7 +196,7 @@ const truncateAll = () => {
 
 /**
  * @deprecated Use teardown or reset instead
- * Old method for clearing data from the database that also mixes in url service behaviour
+ * Old method for clearing data from the database that also mixes in url service behavior
  */
 module.exports.clearData = async () => {
     debug('Database reset');
@@ -205,7 +206,7 @@ module.exports.clearData = async () => {
 
 /**
  * @deprecated Use reset instead
- * Old method for clearing data from the database that also mixes in url service behaviour
+ * Old method for clearing data from the database that also mixes in url service behavior
  */
 module.exports.initData = async () => {
     await knexMigrator.init();
