@@ -2,9 +2,8 @@ const {Router} = require('express');
 const body = require('body-parser');
 const MagicLink = require('@tryghost/magic-link');
 const errors = require('@tryghost/errors');
+const logging = require('@tryghost/logging');
 
-const MemberAnalyticsService = require('@tryghost/member-analytics-service');
-const MembersAnalyticsIngress = require('@tryghost/members-analytics-ingress');
 const PaymentsService = require('@tryghost/members-payments');
 
 const TokenService = require('./services/token');
@@ -16,6 +15,9 @@ const ProductRepository = require('./repositories/product');
 const RouterController = require('./controllers/router');
 const MemberController = require('./controllers/member');
 const WellKnownController = require('./controllers/well-known');
+
+const {EmailSuppressedEvent} = require('@tryghost/email-suppression-list');
+const DomainEvents = require('@tryghost/domain-events');
 
 module.exports = function MembersAPI({
     tokenConfig: {
@@ -39,6 +41,7 @@ module.exports = function MembersAPI({
         StripeCustomer,
         StripeCustomerSubscription,
         Member,
+        MemberNewsletter,
         MemberCancelEvent,
         MemberSubscribeEvent,
         MemberLoginEvent,
@@ -47,28 +50,32 @@ module.exports = function MembersAPI({
         MemberStatusEvent,
         MemberProductEvent,
         MemberEmailChangeEvent,
-        MemberAnalyticEvent,
+        MemberCreatedEvent,
+        SubscriptionCreatedEvent,
+        MemberLinkClickEvent,
+        EmailSpamComplaintEvent,
         Offer,
         OfferRedemption,
         StripeProduct,
         StripePrice,
         Product,
         Settings,
-        Comment
+        Comment,
+        MemberFeedback
     },
+    tiersService,
     stripeAPIService,
     offersAPI,
     labsService,
-    newslettersService
+    newslettersService,
+    memberAttributionService,
+    emailSuppressionList
 }) {
     const tokenService = new TokenService({
         privateKey,
         publicKey,
         issuer
     });
-
-    const memberAnalyticsService = MemberAnalyticsService.create(MemberAnalyticEvent);
-    memberAnalyticsService.eventHandler.setupSubscribers();
 
     const productRepository = new ProductRepository({
         Product,
@@ -85,8 +92,9 @@ module.exports = function MembersAPI({
         labsService,
         productRepository,
         Member,
+        MemberNewsletter,
         MemberCancelEvent,
-        MemberSubscribeEvent,
+        MemberSubscribeEventModel: MemberSubscribeEvent,
         MemberPaidSubscriptionEvent,
         MemberEmailChangeEvent,
         MemberStatusEvent,
@@ -104,8 +112,14 @@ module.exports = function MembersAPI({
         MemberPaymentEvent,
         MemberStatusEvent,
         MemberLoginEvent,
+        MemberCreatedEvent,
+        SubscriptionCreatedEvent,
+        MemberLinkClickEvent,
+        MemberFeedback,
+        EmailSpamComplaintEvent,
         Comment,
-        labsService
+        labsService,
+        memberAttributionService
     });
 
     const memberBREADService = new MemberBREADService({
@@ -123,7 +137,9 @@ module.exports = function MembersAPI({
             }
         },
         labsService,
-        stripeService: stripeAPIService
+        stripeService: stripeAPIService,
+        memberAttributionService,
+        emailSuppressionList
     });
 
     const geolocationService = new GeolocationSerice();
@@ -137,24 +153,29 @@ module.exports = function MembersAPI({
         getSubject
     });
 
-    const memberController = new MemberController({
-        memberRepository,
-        productRepository,
-        StripePrice,
-        tokenService,
-        sendEmailWithMagicLink
-    });
-
     const paymentsService = new PaymentsService({
+        StripeProduct,
+        StripePrice,
+        StripeCustomer,
         Offer,
         offersAPI,
         stripeAPIService
     });
 
+    const memberController = new MemberController({
+        memberRepository,
+        productRepository,
+        paymentsService,
+        tiersService,
+        StripePrice,
+        tokenService,
+        sendEmailWithMagicLink
+    });
+
     const routerController = new RouterController({
         offersAPI,
         paymentsService,
-        productRepository,
+        tiersService,
         memberRepository,
         StripePrice,
         allowSelfSignup,
@@ -162,6 +183,7 @@ module.exports = function MembersAPI({
         stripeAPIService,
         tokenService,
         sendEmailWithMagicLink,
+        memberAttributionService,
         labsService
     });
 
@@ -181,15 +203,29 @@ module.exports = function MembersAPI({
                 type = 'signup';
             }
         }
-        return magicLinkService.sendMagicLink({email, type, tokenData: Object.assign({email}, tokenData), referrer});
+        return magicLinkService.sendMagicLink({email, type, tokenData: Object.assign({email, type}, tokenData), referrer});
     }
 
-    function getMagicLink(email) {
-        return magicLinkService.getMagicLink({tokenData: {email}, type: 'signin'});
+    /**
+     * 
+     * @param {string} email 
+     * @param {'signin'|'signup'} type When you specify 'signin' this will prevent the creation of a new member if no member is found with the provided email
+     * @param {*} [tokenData] Optional token data to add to the token
+     * @returns 
+     */
+    function getMagicLink(email, type, tokenData = {}) {
+        return magicLinkService.getMagicLink({
+            tokenData: {email, ...tokenData}, 
+            type
+        });
+    }
+
+    async function getTokenDataFromMagicLinkToken(token) {
+        return await magicLinkService.getDataFromToken(token);
     }
 
     async function getMemberDataFromMagicLinkToken(token) {
-        const {email, labels = [], name = '', oldEmail, newsletters} = await magicLinkService.getDataFromToken(token);
+        const {email, labels = [], name = '', oldEmail, newsletters, attribution, reqIp, type} = await getTokenDataFromMagicLinkToken(token);
         if (!email) {
             return null;
         }
@@ -198,14 +234,34 @@ module.exports = function MembersAPI({
 
         if (member) {
             await MemberLoginEvent.add({member_id: member.id});
-            if (oldEmail) {
+            if (oldEmail && (!type || type === 'updateEmail')) {
                 // user exists but wants to change their email address
                 await users.update({email}, {id: member.id});
                 return getMemberIdentityData(email);
             }
             return member;
         }
-        const newMember = await users.create({name, email, labels, newsletters});
+
+        // Note: old tokens can still have a missing type (we can remove this after a couple of weeks)
+        if (type && !['signup', 'subscribe'].includes(type)) {
+            // Don't allow sign up
+            // Note that we use the type from inside the magic token so this behaviour can't be changed
+            return null;
+        }
+
+        let geolocation;
+        if (reqIp) {
+            try {
+                geolocation = JSON.stringify(await geolocationService.getGeolocationFromIP(reqIp));
+            } catch (err) {
+                logging.warn(err);
+                // no-op, we don't want to stop anything working due to
+                // geolocation lookup failing
+            }
+        }
+
+        const newMember = await users.create({name, email, labels, newsletters, attribution, geolocation});
+
         await MemberLoginEvent.add({member_id: newMember.id});
         return getMemberIdentityData(email);
     }
@@ -269,10 +325,6 @@ module.exports = function MembersAPI({
             body.json(),
             forwardError((req, res) => routerController.createCheckoutSetupSession(req, res))
         ),
-        createEvents: Router().use(
-            body.json(),
-            forwardError((req, res) => MembersAnalyticsIngress.createEvents(req, res))
-        ),
         updateEmailAddress: Router().use(
             body.json(),
             forwardError((req, res) => memberController.updateEmailAddress(req, res))
@@ -298,6 +350,17 @@ module.exports = function MembersAPI({
 
     bus.emit('ready');
 
+    DomainEvents.subscribe(EmailSuppressedEvent, async function (event) {
+        if (!labsService.isSet('suppressionList')) {
+            return;
+        }
+        const member = await memberRepository.get({email: event.data.emailAddress});
+        if (!member) {
+            return;
+        }
+        await memberRepository.update({newsletters: []}, {id: member.id});
+    });
+
     return {
         middleware,
         getMemberDataFromMagicLinkToken,
@@ -311,6 +374,9 @@ module.exports = function MembersAPI({
         members: users,
         memberBREADService,
         events: eventRepository,
-        productRepository
+        productRepository,
+
+        // Test helpers
+        getTokenDataFromMagicLinkToken
     };
 };

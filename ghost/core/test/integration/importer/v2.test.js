@@ -3,7 +3,7 @@ const sinon = require('sinon');
 const testUtils = require('../../utils');
 const Promise = require('bluebird');
 const moment = require('moment-timezone');
-const ObjectId = require('bson-objectid');
+const ObjectId = require('bson-objectid').default;
 const assert = require('assert');
 const _ = require('lodash');
 const validator = require('@tryghost/validator');
@@ -13,7 +13,9 @@ const db = require('../../../core/server/data/db');
 
 const models = require('../../../core/server/models');
 const importer = require('../../../core/server/data/importer');
-const dataImporter = importer.importers[1];
+const dataImporter = importer.importers.find((instance) => {
+    return instance.type === 'data';
+});
 
 const importOptions = {
     returnImportedData: true
@@ -239,10 +241,7 @@ describe('Importer', function () {
                         return postTag.tag_id !== 2;
                     });
 
-                    importResult.problems.length.should.equal(1);
-
-                    importResult.problems[0].message.should.eql('Entry was not imported and ignored. Detected duplicated entry.');
-                    importResult.problems[0].help.should.eql('Tag');
+                    importResult.problems.length.should.equal(0);
                 });
         });
 

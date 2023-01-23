@@ -58,7 +58,7 @@ describe('Members Service Middleware', function () {
             // Call the middleware
             await membersMiddleware.createSessionFromMagicLink(req, res, next);
 
-            // Check behaviour
+            // Check behavior
             next.calledOnce.should.be.true();
             next.firstCall.args.should.be.an.Array().with.lengthOf(0);
         });
@@ -80,7 +80,7 @@ describe('Members Service Middleware', function () {
             // Call the middleware
             await membersMiddleware.createSessionFromMagicLink(req, res, next);
 
-            // Check behaviour
+            // Check behavior
             next.calledOnce.should.be.false();
             res.redirect.calledOnce.should.be.true();
             res.redirect.firstCall.args[0].should.eql('/blah/?action=signup&success=true');
@@ -96,7 +96,7 @@ describe('Members Service Middleware', function () {
             // Call the middleware
             await membersMiddleware.createSessionFromMagicLink(req, res, next);
 
-            // Check behaviour
+            // Check behavior
             next.calledOnce.should.be.false();
             res.redirect.calledOnce.should.be.true();
             res.redirect.firstCall.args[0].should.eql('/blah/?action=signup&success=false');
@@ -107,7 +107,7 @@ describe('Members Service Middleware', function () {
             req.query = {token: 'test', action: 'signup'};
 
             // Fake token handling failure
-            membersService.ssr.exchangeTokenForSession.resolves();
+            membersService.ssr.exchangeTokenForSession.resolves({});
 
             // Fake welcome page for free tier
             models.Product.findOne.resolves({
@@ -119,7 +119,7 @@ describe('Members Service Middleware', function () {
             // Call the middleware
             await membersMiddleware.createSessionFromMagicLink(req, res, next);
 
-            // Check behaviour
+            // Check behavior
             next.calledOnce.should.be.false();
             res.redirect.calledOnce.should.be.true();
             res.redirect.firstCall.args[0].should.eql('https://custom.com/redirect/');
@@ -142,7 +142,7 @@ describe('Members Service Middleware', function () {
             // Call the middleware
             await membersMiddleware.createSessionFromMagicLink(req, res, next);
 
-            // Check behaviour
+            // Check behavior
             next.calledOnce.should.be.false();
             res.redirect.calledOnce.should.be.true();
             res.redirect.firstCall.args[0].should.eql('https://custom.com/paid/');
@@ -153,12 +153,12 @@ describe('Members Service Middleware', function () {
             req.query = {token: 'test', action: 'signin', r: 'https://site.com/blah/my-post/'};
 
             // Fake token handling failure
-            membersService.ssr.exchangeTokenForSession.resolves();
+            membersService.ssr.exchangeTokenForSession.resolves({});
 
             // Call the middleware
             await membersMiddleware.createSessionFromMagicLink(req, res, next);
 
-            // Check behaviour
+            // Check behavior
             next.calledOnce.should.be.false();
             res.redirect.calledOnce.should.be.true();
             res.redirect.firstCall.args[0].should.eql('/blah/my-post/?success=true&action=signin');
@@ -169,12 +169,12 @@ describe('Members Service Middleware', function () {
             req.query = {token: 'test', action: 'signin', r: 'https://external.com/whatever/'};
 
             // Fake token handling failure
-            membersService.ssr.exchangeTokenForSession.resolves();
+            membersService.ssr.exchangeTokenForSession.resolves({});
 
             // Call the middleware
             await membersMiddleware.createSessionFromMagicLink(req, res, next);
 
-            // Check behaviour
+            // Check behavior
             next.calledOnce.should.be.false();
             res.redirect.calledOnce.should.be.true();
             res.redirect.firstCall.args[0].should.eql('/blah/?action=signin&success=true');

@@ -51,18 +51,21 @@ describe('Frontend Routing', function () {
         sinon.restore();
     });
 
-    before(function () {
-        return testUtils.startGhost()
-            .then(function () {
-                request = supertest.agent(config.get('url'));
-            });
+    before(async function () {
+        await testUtils.startGhost({
+            copyThemes: true,
+            copySettings: true,
+            redirectsFile: true
+        });
+
+        request = supertest.agent(config.get('url'));
     });
 
     describe('Test with Initial Fixtures', function () {
         describe('Error', function () {
             it('should 404 for unknown post with invalid characters', function (done) {
                 request.get('/$pec+acular~/')
-                    .expect('Cache-Control', testUtils.cacheRules.private)
+                    .expect('Cache-Control', testUtils.cacheRules.noCache)
                     .expect(404)
                     .expect(/Page not found/)
                     .end(doEnd(done));
@@ -71,7 +74,7 @@ describe('Frontend Routing', function () {
             it('should 404 for unknown frontend route', function (done) {
                 request.get('/spectacular/marvellous/')
                     .set('Accept', 'application/json')
-                    .expect('Cache-Control', testUtils.cacheRules.private)
+                    .expect('Cache-Control', testUtils.cacheRules.noCache)
                     .expect(404)
                     .expect(/Page not found/)
                     .end(doEnd(done));
@@ -79,7 +82,7 @@ describe('Frontend Routing', function () {
 
             it('should 404 for encoded char not 301 from uncapitalise', function (done) {
                 request.get('/|/')
-                    .expect('Cache-Control', testUtils.cacheRules.private)
+                    .expect('Cache-Control', testUtils.cacheRules.noCache)
                     .expect(404)
                     .expect(/Page not found/)
                     .end(doEnd(done));
@@ -189,7 +192,7 @@ describe('Frontend Routing', function () {
 
                 it('should 404 for non-edit parameter', async function () {
                     await request.get('/static-page-test/notedit/')
-                        .expect('Cache-Control', testUtils.cacheRules.private)
+                        .expect('Cache-Control', testUtils.cacheRules.noCache)
                         .expect(404)
                         .expect(/Page not found/)
                         .expect(assertCorrectFrontendHeaders);
@@ -228,7 +231,7 @@ describe('Frontend Routing', function () {
                 it('should not redirect to editor', function (done) {
                     request.get('/static-page-test/edit/')
                         .expect(404)
-                        .expect('Cache-Control', testUtils.cacheRules.private)
+                        .expect('Cache-Control', testUtils.cacheRules.noCache)
                         .end(doEnd(done));
                 });
             });
@@ -242,7 +245,7 @@ describe('Frontend Routing', function () {
                         // NOTE: only post pages are supported so the router doesn't have a way to distinguish if
                         //       the request was done after AMP 'Page' or 'Post'
                         request.get('/static-page-test/amp/')
-                            .expect('Cache-Control', testUtils.cacheRules.private)
+                            .expect('Cache-Control', testUtils.cacheRules.noCache)
                             .expect(404)
                             .expect(/Post not found/)
                             .end(doEnd(done));

@@ -9,35 +9,31 @@ const forceActiveFilter = (frame) => {
 };
 
 function convertTierInput(input) {
-    const converted = {
-        id: input.id,
-        name: input.name,
-        description: input.description,
-        slug: input.slug,
-        active: input.active,
-        type: input.type,
-        welcome_page_url: input.welcome_page_url,
-        created_at: input.created_at,
-        updated_at: input.updated_at,
-        visibility: input.visibility
-    };
+    const converted = Object.assign({}, input);
 
-    if (input.monthly_price && input.currency) {
-        converted.monthly_price = {
-            amount: input.monthly_price,
-            currency: input.currency
-        };
+    if (Reflect.has(converted, 'active')) {
+        converted.status = converted.active ? 'active' : 'archived';
+        delete converted.active;
     }
 
-    if (input.yearly_price && input.currency) {
-        converted.yearly_price = {
-            amount: input.yearly_price,
-            currency: input.currency
-        };
+    if (Reflect.has(converted, 'welcome_page_url')) {
+        converted.welcomePageURL = converted.welcome_page_url;
+        delete converted.welcome_page_url;
     }
 
-    if (input.benefits) {
-        converted.benefits = input.benefits.map(name => ({name}));
+    if (Reflect.has(converted, 'trial_days')) {
+        converted.trialDays = converted.trial_days;
+        delete converted.trial_days;
+    }
+
+    if (Reflect.has(converted, 'monthly_price')) {
+        converted.monthlyPrice = converted.monthly_price;
+        delete converted.monthly_price;
+    }
+
+    if (Reflect.has(converted, 'yearly_price')) {
+        converted.yearlyPrice = converted.yearly_price;
+        delete converted.yearly_price;
     }
 
     return converted;

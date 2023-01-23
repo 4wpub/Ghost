@@ -1,12 +1,13 @@
 const _ = require('lodash');
 const should = require('should');
 const supertest = require('supertest');
-const ObjectId = require('bson-objectid');
+const ObjectId = require('bson-objectid').default;
 const moment = require('moment-timezone');
 const testUtils = require('../../../utils');
 const config = require('../../../../core/shared/config');
 const models = require('../../../../core/server/models');
 const localUtils = require('./utils');
+const mockManager = require('../../../utils/e2e-framework-mock-manager');
 
 const defaultNewsletterSlug = testUtils.DataGenerator.Content.newsletters[0].slug;
 const secondNewsletterSlug = testUtils.DataGenerator.Content.newsletters[1].slug;
@@ -23,6 +24,14 @@ describe('Posts API', function () {
         await models.Newsletter.edit({status: 'archived'}, {id: defaultNewsletter.id});
 
         await localUtils.doAuth(request, 'users:extra', 'posts', 'emails', 'newsletters', 'members:newsletters');
+    });
+
+    beforeEach(function () {
+        mockManager.mockLabsDisabled('emailStability');
+    });
+
+    afterEach(function () {
+        mockManager.restore();
     });
 
     describe('Browse', function () {
@@ -426,7 +435,7 @@ describe('Posts API', function () {
             res.body.posts[0].tags.length.should.equal(1);
             res.body.posts[0].tags[0].slug.should.equal('five-spaces');
 
-            // Expected behaviour when creating a slug with spaces:
+            // Expected behavior when creating a slug with spaces:
             res.body.posts[0].tags[0].name.should.equal('five-spaces');
 
             // If we create another post again now that the five-spaces tag exists,

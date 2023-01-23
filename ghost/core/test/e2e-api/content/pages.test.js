@@ -4,7 +4,7 @@ const moment = require('moment');
 const testUtils = require('../../utils');
 const models = require('../../../core/server/models');
 const {agentProvider, fixtureManager, matchers} = require('../../utils/e2e-framework');
-const {anyEtag, anyUuid, anyISODateTimeWithTZ} = matchers;
+const {anyContentVersion, anyEtag, anyUuid, anyISODateTimeWithTZ} = matchers;
 
 const pageMatcher = {
     published_at: anyISODateTimeWithTZ,
@@ -18,7 +18,7 @@ describe('Pages Content API', function () {
 
     before(async function () {
         agent = await agentProvider.getContentAPIAgent();
-        await fixtureManager.init('users:no-owner', 'user:inactive', 'posts', 'tags:extra', 'api_keys');
+        await fixtureManager.init('users', 'user:inactive', 'posts', 'tags:extra', 'api_keys');
         await agent.authenticate();
     });
 
@@ -26,6 +26,7 @@ describe('Pages Content API', function () {
         const res = await agent.get(`pages/`)
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -40,10 +41,20 @@ describe('Pages Content API', function () {
         assert.equal(urlParts.host, '127.0.0.1:2369');
     });
 
+    it('Cannot request pages with mobiledoc or lexical formats', async function () {
+        await agent
+            .get(`pages/?formats=mobiledoc,lexical`)
+            .expectStatus(200)
+            .matchBodySnapshot({
+                pages: new Array(5).fill(pageMatcher)
+            });
+    });
+
     it('Can request page', async function () {
         const res = await agent.get(`pages/${fixtureManager.get('posts', 5).id}/`)
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({

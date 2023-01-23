@@ -1,5 +1,5 @@
 const {VersionMismatchError} = require('@tryghost/errors');
-const debug = require('@tryghost/debug');
+const debug = require('@tryghost/debug')('stripe');
 const Stripe = require('stripe').Stripe;
 const LeakyBucket = require('leaky-bucket');
 const EXPECTED_API_EFFICIENCY = 0.95;
@@ -30,9 +30,6 @@ const STRIPE_API_VERSION = '2020-08-27';
 module.exports = class StripeAPI {
     /**
      * StripeAPI
-     *
-     * @param {object} params
-     * @param {IStripeAPIConfig} params.config
      */
     constructor() {
         /** @type {Stripe} */
@@ -142,7 +139,7 @@ module.exports = class StripeAPI {
      * @param {string} id
      * @param {object} options
      * @param {boolean} options.active
-     * @param {string=} options.nickname
+     * @param {string} [options.nickname]
      *
      * @returns {Promise<IPrice>}
      */
@@ -360,23 +357,42 @@ module.exports = class StripeAPI {
      * @param {string} options.successUrl
      * @param {string} options.cancelUrl
      * @param {string} options.customerEmail
+     * @param {number} options.trialDays
      * @param {string} [options.coupon]
      *
      * @returns {Promise<import('stripe').Stripe.Checkout.Session>}
      */
     async createCheckoutSession(priceId, customer, options) {
         const metadata = options.metadata || undefined;
+        const customerId = customer ? customer.id : undefined;
         const customerEmail = customer ? customer.email : options.customerEmail;
+ 
         await this._rateLimitBucket.throttle();
         let discounts;
         if (options.coupon) {
             discounts = [{coupon: options.coupon}];
         }
-        const session = await this._stripe.checkout.sessions.create({
+
+        const subscriptionData = {
+            trial_from_plan: true,
+            items: [{
+                plan: priceId
+            }]
+        };
+
+        /**
+         * `trial_from_plan` is deprecated.
+         * Replaces it in favor of custom trial period days stored in Ghost
+         */
+        if (typeof options.trialDays === 'number' && options.trialDays > 0) {
+            delete subscriptionData.trial_from_plan;
+            subscriptionData.trial_period_days = options.trialDays;
+        }
+
+        let stripeSessionOptions = {
             payment_method_types: ['card'],
             success_url: options.successUrl || this._config.checkoutSessionSuccessUrl,
             cancel_url: options.cancelUrl || this._config.checkoutSessionCancelUrl,
-            customer_email: customerEmail,
             // @ts-ignore - we need to update to latest stripe library to correctly use newer features
             allow_promotion_codes: discounts ? undefined : this._config.enablePromoCodes,
             metadata,
@@ -390,13 +406,18 @@ module.exports = class StripeAPI {
             // It should be replaced with the line_items entry above when possible,
             // however, this would lose the "trial from plan" feature which has also
             // been deprecated by Stripe
-            subscription_data: {
-                trial_from_plan: true,
-                items: [{
-                    plan: priceId
-                }]
-            }
-        });
+            subscription_data: subscriptionData
+        };
+
+        /* We are only allowed to specify one of these; email will be pulled from
+           customer object on Stripe side if that object already exists. */
+        if (customerId) {
+            stripeSessionOptions.customer = customerId;
+        } else {
+            stripeSessionOptions.customer_email = customerEmail;
+        }
+
+        const session = await this._stripe.checkout.sessions.create(stripeSessionOptions);
 
         return session;
     }

@@ -1,8 +1,12 @@
 /**
  * @typedef {object} SubscriptionCreatedEventData
+ * @prop {string} source
  * @prop {string} memberId
+ * @prop {string} batchId
+ * @prop {string} tierId
  * @prop {string} subscriptionId
  * @prop {string} offerId
+ * @prop {import('@tryghost/member-attribution/lib/attribution').Attribution} [attribution]
  */
 
 module.exports = class SubscriptionCreatedEvent {
@@ -20,6 +24,6 @@ module.exports = class SubscriptionCreatedEvent {
      * @param {Date} [timestamp]
      */
     static create(data, timestamp) {
-        return new SubscriptionCreatedEvent(data, timestamp || new Date);
+        return new SubscriptionCreatedEvent(data, timestamp ?? new Date);
     }
 };

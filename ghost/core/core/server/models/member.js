@@ -39,6 +39,21 @@ const Member = ghostBookshelf.Model.extend({
         }, {
             key: 'newsletters',
             replacement: 'newsletters.slug'
+        }, {
+            key: 'signup',
+            replacement: 'signups.attribution_id'
+        }, {
+            key: 'conversion',
+            replacement: 'conversions.attribution_id'
+        }, {
+            key: 'opened_emails.post_id',
+            replacement: 'emails.post_id',
+            // Currently we cannot expand on values such as null or a string in mongo-knex
+            // But the line below is essentially the same as: `email_recipients.opened_at:-null`
+            expansion: 'email_recipients.opened_at:>=0'
+        }, {
+            key: 'offer_redemptions',
+            replacement: 'offer_redemptions.offer_id'
         }];
     },
 
@@ -73,6 +88,45 @@ const Member = ghostBookshelf.Model.extend({
                 joinFrom: 'member_id',
                 joinTo: 'customer_id',
                 joinToForeign: 'customer_id'
+            },
+            signups: {
+                tableName: 'members_created_events',
+                tableNameAs: 'signups',
+                type: 'oneToOne',
+                joinFrom: 'member_id'
+            },
+            conversions: {
+                tableName: 'members_subscription_created_events',
+                tableNameAs: 'conversions',
+                type: 'oneToOne',
+                joinFrom: 'member_id'
+            },
+            clicked_links: {
+                tableName: 'redirects',
+                tableNameAs: 'clicked_links',
+                type: 'manyToMany',
+                joinTable: 'members_click_events',
+                joinFrom: 'member_id',
+                joinTo: 'redirect_id'
+            },
+            emails: {
+                tableName: 'emails',
+                tableNameAs: 'emails',
+                type: 'manyToMany',
+                joinTable: 'email_recipients',
+                joinFrom: 'member_id',
+                joinTo: 'email_id'
+            },
+            feedback: {
+                tableName: 'members_feedback',
+                tableNameAs: 'feedback',
+                type: 'oneToOne',
+                joinFrom: 'member_id'
+            },
+            offer_redemptions: {
+                tableName: 'offer_redemptions',
+                type: 'oneToOne',
+                joinFrom: 'member_id'
             }
         };
     },
@@ -82,6 +136,12 @@ const Member = ghostBookshelf.Model.extend({
     // do not delete email_recipients records when a member is destroyed. Recipient
     // records are used for analytics and historical records
     relationshipConfig: {
+        products: {
+            editable: true
+        },
+        labels: {
+            editable: true
+        },
         email_recipients: {
             destroyRelated: false
         }
@@ -92,7 +152,8 @@ const Member = ghostBookshelf.Model.extend({
         newsletters: 'newsletters',
         labels: 'labels',
         stripeCustomers: 'members_stripe_customers',
-        email_recipients: 'email_recipients'
+        email_recipients: 'email_recipients',
+        offers: 'offers'
     },
 
     productEvents() {
@@ -102,17 +163,18 @@ const Member = ghostBookshelf.Model.extend({
 
     products() {
         return this.belongsToMany('Product', 'members_products', 'member_id', 'product_id')
-            .withPivot('sort_order')
+            .withPivot('sort_order', 'expiry_at')
             .query('orderBy', 'sort_order', 'ASC')
             .query((qb) => {
                 // avoids bookshelf adding a `DISTINCT` to the query
                 // we know the result set will already be unique and DISTINCT hurts query performance
-                qb.columns('products.*');
+                qb.columns('products.*', 'expiry_at');
             });
     },
 
     newsletters() {
         return this.belongsToMany('Newsletter', 'members_newsletters', 'member_id', 'newsletter_id')
+            .query('orderBy', 'newsletters.sort_order', 'ASC')
             .query((qb) => {
                 // avoids bookshelf adding a `DISTINCT` to the query
                 // we know the result set will already be unique and DISTINCT hurts query performance
@@ -153,6 +215,18 @@ const Member = ghostBookshelf.Model.extend({
 
     email_recipients() {
         return this.hasMany('EmailRecipient', 'member_id', 'id');
+    },
+
+    async updateTierExpiry(products = [], options = {}) {
+        for (const product of products) {
+            if (product?.expiry_at) {
+                const expiry = new Date(product.expiry_at);
+                const queryOptions = _.extend({}, options, {
+                    query: {where: {product_id: product.id}}
+                });
+                await this.products().updatePivot({expiry_at: expiry}, queryOptions);
+            }
+        }
     },
 
     serialize(options) {
@@ -344,7 +418,13 @@ const Member = ghostBookshelf.Model.extend({
                 return this.add(data, Object.assign({transacting}, unfilteredOptions));
             });
         }
-        return ghostBookshelf.Model.add.call(this, data, unfilteredOptions);
+
+        return ghostBookshelf.Model.add.call(this, data, unfilteredOptions).then(async (member) => {
+            if (data.products) {
+                await member.updateTierExpiry(data.products, _.pick(unfilteredOptions, 'transacting'));
+            }
+            return member;
+        });
     },
 
     edit(data, unfilteredOptions = {}) {
@@ -353,7 +433,13 @@ const Member = ghostBookshelf.Model.extend({
                 return this.edit(data, Object.assign({transacting}, unfilteredOptions));
             });
         }
-        return ghostBookshelf.Model.edit.call(this, data, unfilteredOptions);
+
+        return ghostBookshelf.Model.edit.call(this, data, unfilteredOptions).then(async (member) => {
+            if (data.products) {
+                await member.updateTierExpiry(data.products, _.pick(unfilteredOptions, 'transacting'));
+            }
+            return member;
+        });
     },
 
     destroy(unfilteredOptions = {}) {

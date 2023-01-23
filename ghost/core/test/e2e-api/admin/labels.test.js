@@ -1,5 +1,5 @@
 const {agentProvider, fixtureManager, matchers} = require('../../utils/e2e-framework');
-const {anyObjectId, anyISODateTime, anyErrorId, anyEtag, anyLocationFor} = matchers;
+const {anyContentVersion, anyObjectId, anyISODateTime, anyErrorId, anyEtag, anyLocationFor} = matchers;
 
 const matchLabel = {
     id: anyObjectId,
@@ -22,6 +22,7 @@ describe('Labels API', function () {
             .expectStatus(200)
             .matchBodySnapshot()
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -37,6 +38,7 @@ describe('Labels API', function () {
                 labels: [matchLabel]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('labels')
             });
@@ -56,6 +58,7 @@ describe('Labels API', function () {
                 }]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -68,6 +71,7 @@ describe('Labels API', function () {
                 labels: [matchLabel]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -80,6 +84,7 @@ describe('Labels API', function () {
                 labels: [matchLabel]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -93,6 +98,7 @@ describe('Labels API', function () {
                 labels: [matchLabel]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });
@@ -105,6 +111,7 @@ describe('Labels API', function () {
                 labels: [matchLabel]
             })
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
 
@@ -115,6 +122,22 @@ describe('Labels API', function () {
             .expectStatus(204)
             .expectEmptyBody()
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            });
+    });
+
+    it('Cannot destroy non-existent label', async function () {
+        await agent
+            .delete('labels/abcd1234abcd1234abcd1234')
+            .expectStatus(404)
+            .matchBodySnapshot({
+                errors: [{
+                    id: anyErrorId
+                }]
+            })
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             });
     });

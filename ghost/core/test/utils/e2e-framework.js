@@ -4,7 +4,7 @@
 // - state builder
 // - output state checker (in case we don't get jest snapshots working)
 //
-// The request agetnt is responsible for making HTTP-like requests to an application (express app in case of Ghost).
+// The request agent is responsible for making HTTP-like requests to an application (express app in case of Ghost).
 // Note there's no actual need to make an HTTP request to an actual server, bypassing HTTP and hooking into the application
 // directly is enough and reduces dependence on blocking a port (allows to run tests in parallel).
 //
@@ -15,6 +15,7 @@
 const _ = require('lodash');
 const {sequence} = require('@tryghost/promise');
 const {any, stringMatching} = require('@tryghost/express-test').snapshot;
+const {AsymmetricMatcher} = require('expect');
 const fs = require('fs-extra');
 const path = require('path');
 const os = require('os');
@@ -27,14 +28,12 @@ const urlServiceUtils = require('./url-service-utils');
 const mockManager = require('./e2e-framework-mock-manager');
 
 const boot = require('../../core/boot');
-const AdminAPITestAgent = require('./admin-api-test-agent');
-const MembersAPITestAgent = require('./members-api-test-agent');
-const ContentAPITestAgent = require('./content-api-test-agent');
-const GhostAPITestAgent = require('./ghost-api-test-agent');
+const {AdminAPITestAgent, ContentAPITestAgent, GhostAPITestAgent, MembersAPITestAgent} = require('./agents');
 const db = require('./db-utils');
 
 // Services that need resetting
 const settingsService = require('../../core/server/services/settings/settings-service');
+const supertest = require('supertest');
 
 /**
  * @param {Object} [options={}]
@@ -78,20 +77,20 @@ const startGhost = async (options = {}) => {
  * Slightly simplified copy-paste from e2e-utils.
  * @param {Object} options
  */
-const prepareContentFolder = ({contentFolder, redirectsFile = true, routesFile = true}) => {
+const prepareContentFolder = async ({contentFolder, redirectsFile = true, routesFile = true}) => {
     const contentFolderForTests = contentFolder;
 
-    fs.ensureDir(contentFolderForTests);
-    fs.ensureDir(path.join(contentFolderForTests, 'data'));
-    fs.ensureDir(path.join(contentFolderForTests, 'themes'));
-    fs.ensureDir(path.join(contentFolderForTests, 'images'));
-    fs.ensureDir(path.join(contentFolderForTests, 'logs'));
-    fs.ensureDir(path.join(contentFolderForTests, 'adapters'));
-    fs.ensureDir(path.join(contentFolderForTests, 'settings'));
+    await fs.ensureDir(contentFolderForTests);
+    await fs.ensureDir(path.join(contentFolderForTests, 'data'));
+    await fs.ensureDir(path.join(contentFolderForTests, 'themes'));
+    await fs.ensureDir(path.join(contentFolderForTests, 'images'));
+    await fs.ensureDir(path.join(contentFolderForTests, 'logs'));
+    await fs.ensureDir(path.join(contentFolderForTests, 'adapters'));
+    await fs.ensureDir(path.join(contentFolderForTests, 'settings'));
 
     // Copy all themes into the new test content folder. Default active theme is always casper.
     // If you want to use a different theme, you have to set the active theme (e.g. stub)
-    fs.copySync(
+    await fs.copy(
         path.join(__dirname, 'fixtures', 'themes'),
         path.join(contentFolderForTests, 'themes')
     );
@@ -101,7 +100,7 @@ const prepareContentFolder = ({contentFolder, redirectsFile = true, routesFile =
     }
 
     if (routesFile) {
-        fs.copySync(
+        await fs.copy(
             path.join(__dirname, 'fixtures', 'settings', 'routes.yaml'),
             path.join(contentFolderForTests, 'settings', 'routes.yaml')
         );
@@ -131,6 +130,15 @@ const getFixture = (type, index = 0) => {
 };
 
 /**
+ * Reset rate limit instances (not the brute table)
+ */
+const resetRateLimits = async () => {
+    // Reset rate limiting instances
+    const {spamPrevention} = require('../../core/server/web/shared/middleware/api');
+    spamPrevention.reset();
+};
+
+/**
  * This function ensures that Ghost's data is reset back to "factory settings"
  *
  */
@@ -142,13 +150,16 @@ const resetData = async () => {
 
     // Clear out the database
     await db.reset({truncate: true});
+
+    // Reset rate limiting instances (resetting the table is not enough!)
+    await resetRateLimits();
 };
 
 /**
  * Creates a ContentAPITestAgent which is a drop-in substitution for supertest.
  * It is automatically hooked up to the Content API so you can make requests to e.g.
  * agent.get('/posts/') without having to worry about URL paths
- * @returns {Promise<ContentAPITestAgent>} agent
+ * @returns {Promise<InstanceType<ContentAPITestAgent>>} agent
  */
 const getContentAPIAgent = async () => {
     try {
@@ -172,7 +183,7 @@ const getContentAPIAgent = async () => {
  *
  * @param {Object} [options={}]
  * @param {Boolean} [options.members] Include members in the boot process
- * @returns {Promise<AdminAPITestAgent>} agent
+ * @returns {Promise<InstanceType<AdminAPITestAgent>>} agent
  */
 const getAdminAPIAgent = async (options = {}) => {
     const bootOptions = {};
@@ -200,7 +211,7 @@ const getAdminAPIAgent = async (options = {}) => {
  * It is automatically hooked up to the Members API so you can make requests to e.g.
  * agent.get('/webhooks/stripe/') without having to worry about URL paths
  *
- * @returns {Promise<MembersAPITestAgent>} agent
+ * @returns {Promise<InstanceType<MembersAPITestAgent>>} agent
  */
 const getMembersAPIAgent = async () => {
     const bootOptions = {
@@ -221,11 +232,36 @@ const getMembersAPIAgent = async () => {
 };
 
 /**
+ * Creates a MembersAPITestAgent which is a drop-in substitution for supertest
+ * It is automatically hooked up to the Members API so you can make requests to e.g.
+ * agent.get('/webhooks/stripe/') without having to worry about URL paths
+ *
+ * @returns {Promise<InstanceType<GhostAPITestAgent>>} agent
+ */
+const getWebmentionsAPIAgent = async () => {
+    const bootOptions = {
+        frontend: true
+    };
+    try {
+        const app = await startGhost(bootOptions);
+        const originURL = configUtils.config.get('url');
+
+        return new GhostAPITestAgent(app, {
+            apiURL: '/webmentions/',
+            originURL
+        });
+    } catch (error) {
+        error.message = `Unable to create test agent. ${error.message}`;
+        throw error;
+    }
+};
+
+/**
  * Creates a GhostAPITestAgent, which is a drop-in substitution for supertest
  * It is automatically hooked up to the Ghost API so you can make requests to e.g.
  * agent.get('/well-known/jwks.json') without having to worry about URL paths
  *
- * @returns {Promise<GhostAPITestAgent>} agent
+ * @returns {Promise<InstanceType<GhostAPITestAgent>>} agent
  */
 const getGhostAPIAgent = async () => {
     const bootOptions = {
@@ -248,7 +284,7 @@ const getGhostAPIAgent = async () => {
 
 /**
  *
- * @returns {Promise<{adminAgent: AdminAPITestAgent, membersAgent: MembersAPITestAgent}>} agents
+ * @returns {Promise<{adminAgent: InstanceType<AdminAPITestAgent>, membersAgent: InstanceType<MembersAPITestAgent>}>} agents
  */
 const getAgentsForMembers = async () => {
     let membersAgent;
@@ -281,6 +317,57 @@ const getAgentsForMembers = async () => {
     };
 };
 
+/**
+ * WARNING: when using this, you should stop the returned ghostServer after the tests.
+ * @NOTE: for now method returns a supertest agent for Frontend instead of test agent with snapshot support.
+ *        frontendAgent should be returning an instance of TestAgent (related: https://github.com/TryGhost/Toolbox/issues/471)
+ *  @returns {Promise<{adminAgent: InstanceType<AdminAPITestAgent>, membersAgent: InstanceType<MembersAPITestAgent>, frontendAgent: InstanceType<supertest.SuperAgentTest>, contentAPIAgent: InstanceType<ContentAPITestAgent>, ghostServer: Express.Application}>} agents
+ */
+const getAgentsWithFrontend = async () => {
+    let ghostServer;
+    let membersAgent;
+    let adminAgent;
+    let frontendAgent;
+    let contentAPIAgent;
+
+    const bootOptions = {
+        frontend: true,
+        server: true
+    };
+    try {
+        ghostServer = await startGhost(bootOptions);
+        const app = ghostServer.rootApp;
+
+        const originURL = configUtils.config.get('url');
+
+        membersAgent = new MembersAPITestAgent(app, {
+            apiURL: '/members/',
+            originURL
+        });
+        adminAgent = new AdminAPITestAgent(app, {
+            apiURL: '/ghost/api/admin/',
+            originURL
+        });
+        contentAPIAgent = new ContentAPITestAgent(app, {
+            apiURL: '/ghost/api/content/',
+            originURL
+        });
+        frontendAgent = supertest.agent(originURL);
+    } catch (error) {
+        error.message = `Unable to create test agent. ${error.message}`;
+        throw error;
+    }
+
+    return {
+        adminAgent,
+        membersAgent,
+        frontendAgent,
+        contentAPIAgent,
+        // @NOTE: ghost server should not be exposed ideally, it's a hack (see commit message)
+        ghostServer
+    };
+};
+
 const insertWebhook = ({event, url}) => {
     return fixtureUtils.fixtures.insertWebhook({
         event: event,
@@ -288,16 +375,45 @@ const insertWebhook = ({event, url}) => {
     });
 };
 
+class Nullable extends AsymmetricMatcher {
+    constructor(sample) {
+        super(sample);
+    }
+
+    asymmetricMatch(other) {
+        if (other === null) {
+            return true;
+        }
+
+        return this.sample.asymmetricMatch(other);
+    }
+
+    toString() {
+        return `Nullable<${this.sample.toString()}>`;
+    }
+
+    getExpectedType() {
+        return `null|${this.sample.getExpectedType()}`;
+    }
+
+    toAsymmetricMatcher() {
+        return `Nullable<${this.sample.toAsymmetricMatcher ? this.sample.toAsymmetricMatcher() : this.sample.toString()}>`;
+    }
+}
+
 module.exports = {
     // request agent
     agentProvider: {
         getAdminAPIAgent,
         getMembersAPIAgent,
+        getWebmentionsAPIAgent,
         getContentAPIAgent,
         getAgentsForMembers,
-        getGhostAPIAgent
+        getGhostAPIAgent,
+        getAgentsWithFrontend
     },
-
+    // @NOTE: startGhost only exposed for playwright tests
+    startGhost,
     // Mocks and Stubs
     mockManager,
 
@@ -318,6 +434,7 @@ module.exports = {
         anyArray: any(Array),
         anyObject: any(Object),
         anyNumber: any(Number),
+        nullable: expectedObject => new Nullable(expectedObject), // usage: nullable(anyString)
         anyStringNumber: stringMatching(/\d+/),
         anyISODateTime: stringMatching(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z/),
         anyISODate: stringMatching(/\d{4}-\d{2}-\d{2}/),
@@ -331,11 +448,18 @@ module.exports = {
         anyLocationFor: (resource) => {
             return stringMatching(new RegExp(`https?://.*?/${resource}/[a-f0-9]{24}/`));
         },
+        anyGhostAgent: stringMatching(/Ghost\/\d+\.\d+\.\d+\s\(https:\/\/github.com\/TryGhost\/Ghost\)/),
+        // @NOTE: hack here! it's due to https://github.com/TryGhost/Toolbox/issues/341
+        //        this matcher should be removed once the issue is solved - routing is redesigned
+        //        An ideal solution would be removal of this matcher altogether.
+        anyLocalURL: stringMatching(/http:\/\/127.0.0.1:2369\/[A-Za-z0-9_-]+\//),
         stringMatching
     },
 
     // utilities
     configUtils: require('./configUtils'),
     dbUtils: require('./db-utils'),
-    urlUtils: require('./urlUtils')
+    urlUtils: require('./urlUtils'),
+    sleep: require('./sleep'),
+    resetRateLimits
 };

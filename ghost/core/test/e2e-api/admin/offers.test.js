@@ -1,5 +1,5 @@
 const {agentProvider, fixtureManager, matchers} = require('../../utils/e2e-framework');
-const {anyEtag, anyObjectId, anyLocationFor, anyErrorId} = matchers;
+const {anyContentVersion, anyEtag, anyObjectId, anyLocationFor, anyErrorId} = matchers;
 const should = require('should');
 const models = require('../../../core/server/models');
 
@@ -16,6 +16,7 @@ async function getFreeProduct() {
 describe('Offers API', function () {
     let defaultTier;
     let savedOffer;
+    let trialOffer;
 
     before(async function () {
         agent = await agentProvider.getAdminAPIAgent();
@@ -29,6 +30,7 @@ describe('Offers API', function () {
             .get(`offers/`)
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot();
@@ -53,12 +55,13 @@ describe('Offers API', function () {
                 id: defaultTier.id
             }
         };
-        
+
         const {body} = await agent
             .post(`offers/`)
             .body({offers: [newOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('offers')
             })
@@ -85,12 +88,13 @@ describe('Offers API', function () {
                 id: defaultTier.id
             }
         };
-        
+
         await agent
             .post(`offers/`)
             .body({offers: [newOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('offers')
             })
@@ -116,12 +120,13 @@ describe('Offers API', function () {
                 id: defaultTier.id
             }
         };
-        
+
         await agent
             .post(`offers/`)
             .body({offers: [newOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('offers')
             })
@@ -151,12 +156,13 @@ describe('Offers API', function () {
                 id: defaultTier.id
             }
         };
-        
+
         await agent
             .post(`offers/`)
             .body({offers: [newOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag,
                 location: anyLocationFor('offers')
             })
@@ -168,6 +174,40 @@ describe('Offers API', function () {
                     }
                 }]
             });
+    });
+
+    it('Can add a trial offer', async function () {
+        const newOffer = {
+            name: 'Fourth of July Sales trial',
+            code: '4th-trial',
+            cadence: 'year',
+            amount: 20,
+            duration: 'trial',
+            type: 'trial',
+            currency: 'USD',
+            tier: {
+                id: defaultTier.id
+            }
+        };
+
+        const {body} = await agent
+            .post(`offers/`)
+            .body({offers: [newOffer]})
+            .expectStatus(200)
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag,
+                location: anyLocationFor('offers')
+            })
+            .matchBodySnapshot({
+                offers: [{
+                    id: anyObjectId,
+                    tier: {
+                        id: anyObjectId
+                    }
+                }]
+            });
+        trialOffer = body.offers[0];
     });
 
     it('Cannot create offer with same code', async function () {
@@ -183,12 +223,13 @@ describe('Offers API', function () {
                 id: defaultTier.id
             }
         };
-        
+
         await agent
             .post(`offers/`)
             .body({offers: [newOffer]})
             .expectStatus(400)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -211,12 +252,13 @@ describe('Offers API', function () {
                 id: defaultTier.id
             }
         };
-        
+
         await agent
             .post(`offers/`)
             .body({offers: [newOffer]})
             .expectStatus(400)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -239,12 +281,13 @@ describe('Offers API', function () {
                 id: defaultTier.id
             }
         };
-        
+
         await agent
             .post(`offers/`)
             .body({offers: [newOffer]})
             .expectStatus(400)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -259,10 +302,11 @@ describe('Offers API', function () {
             .get(`offers/`)
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
-                offers: new Array(4).fill({
+                offers: new Array(5).fill({
                     id: anyObjectId,
                     tier: {
                         id: anyObjectId
@@ -276,11 +320,32 @@ describe('Offers API', function () {
             .get(`offers/${savedOffer.id}/`)
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
                 offers: new Array(1).fill({
                     id: anyObjectId,
+                    tier: {
+                        id: anyObjectId
+                    }
+                })
+            });
+    });
+
+    it('Can get a trial offer', async function () {
+        await agent
+            .get(`offers/${trialOffer.id}/`)
+            .expectStatus(200)
+            .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
+                etag: anyEtag
+            })
+            .matchBodySnapshot({
+                offers: new Array(1).fill({
+                    id: anyObjectId,
+                    type: 'trial',
+                    duration: 'trial',
                     tier: {
                         id: anyObjectId
                     }
@@ -302,6 +367,7 @@ describe('Offers API', function () {
             .body({offers: [updatedOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -329,6 +395,7 @@ describe('Offers API', function () {
             .body({offers: [updatedOffer]})
             .expectStatus(400)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -349,6 +416,7 @@ describe('Offers API', function () {
             .body({offers: [updatedOffer]})
             .expectStatus(400)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -369,6 +437,7 @@ describe('Offers API', function () {
             .body({offers: [updatedOffer]})
             .expectStatus(400)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -389,6 +458,7 @@ describe('Offers API', function () {
             .body({offers: [updatedOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -410,6 +480,7 @@ describe('Offers API', function () {
             .get(`offers/?filter=${filter}`)
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -428,10 +499,11 @@ describe('Offers API', function () {
             .get(`offers/?filter=${filter}`)
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
-                offers: new Array(3).fill({
+                offers: new Array(4).fill({
                     id: anyObjectId,
                     tier: {
                         id: anyObjectId
@@ -451,6 +523,7 @@ describe('Offers API', function () {
             .body({offers: [updatedOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -478,6 +551,7 @@ describe('Offers API', function () {
             .body({offers: [updatedOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({
@@ -508,6 +582,7 @@ describe('Offers API', function () {
             .body({offers: [updatedOffer]})
             .expectStatus(200)
             .matchHeaderSnapshot({
+                'content-version': anyContentVersion,
                 etag: anyEtag
             })
             .matchBodySnapshot({

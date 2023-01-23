@@ -1,12 +1,12 @@
 const {agentProvider, fixtureManager, matchers} = require('../../utils/e2e-framework');
-const {anyEtag, anyISODate, anyISODateTime, stringMatching} = matchers;
+const {anyEtag, anyISODate, anyISODateTime, anyContentLength, anyContentVersion, stringMatching, anyNumber} = matchers;
 
 describe('Explore API', function () {
     let agent;
 
     before(async function () {
         agent = await agentProvider.getAdminAPIAgent();
-        await fixtureManager.init('members');
+        await fixtureManager.init('posts', 'members');
         await agent.loginAsOwner();
     });
 
@@ -17,8 +17,9 @@ describe('Explore API', function () {
                 .expectStatus(200)
                 .matchBodySnapshot({
                     explore: {
-                        mostRecentlyPublishedAt: anyISODateTime,
-                        mrrStats: {
+                        most_recently_published_at: anyISODateTime,
+                        total_posts_published: anyNumber,
+                        mrr_stats: {
                             data: [{
                                 date: anyISODate
                             },
@@ -30,7 +31,10 @@ describe('Explore API', function () {
                     }
                 })
                 .matchHeaderSnapshot({
-                    etag: anyEtag
+                    etag: anyEtag,
+                    // Special rule for this test, as the labs setting changes a lot
+                    'content-length': anyContentLength,
+                    'content-version': anyContentVersion
                 });
         });
     });

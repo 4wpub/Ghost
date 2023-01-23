@@ -5,7 +5,6 @@ const fs = require('fs');
 const _ = require('lodash');
 const supertest = require('supertest');
 const nock = require('nock');
-const testUtils = require('../../utils');
 const config = require('../../../core/shared/config');
 const localUtils = require('./utils');
 const settingsCache = require('../../../core/shared/settings-cache');
@@ -26,10 +25,9 @@ describe('Themes API', function () {
     };
 
     before(async function () {
-        // NOTE: this flag should not be here! the URL service re-initialization should be fixed instead
-        //       The reason why this init doesn't work without "forceStart" is because during the "restartModeGhostStart"
-        //       the routing.routerManager is never called with "start". That's why a full boot is needed
-        await localUtils.startGhost();
+        await localUtils.startGhost({
+            copyThemes: true
+        });
         ownerRequest = supertest.agent(config.get('url'));
         await localUtils.doAuth(ownerRequest);
     });
@@ -86,6 +84,13 @@ describe('Themes API', function () {
             .set('Origin', config.get('url'))
             .expect('Content-Type', /application\/zip/)
             .expect('Content-Disposition', 'attachment; filename=casper.zip')
+            .expect(200);
+    });
+
+    it('Can fetch active theme', async function () {
+        await ownerRequest
+            .get(localUtils.API.getApiQuery('themes/active/'))
+            .set('Origin', config.get('url'))
             .expect(200);
     });
 
@@ -266,6 +271,14 @@ describe('Themes API', function () {
         localUtils.API.checkResponse(testTheme2, 'theme', ['warnings', 'templates']);
         testTheme2.active.should.be.true();
         testTheme2.warnings.should.be.an.Array();
+
+        // Result should be the same
+        const activeThemeResult = await ownerRequest
+            .get(localUtils.API.getApiQuery('themes/active/'))
+            .set('Origin', config.get('url'))
+            .expect(200);
+
+        res2.body.should.eql(activeThemeResult.body);
     });
 
     it('Can download and install a theme from GitHub', async function () {

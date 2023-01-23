@@ -8,7 +8,8 @@ ghost-*.tgz
 .eslintrc.json
 .eslintrc.js
 .npmignore
-.c8rc.json
+.c8rc*.json
+playwright.config.js
 jsconfig.json
 changelog.md*
 coverage/**
@@ -30,8 +31,7 @@ content/settings/**
 !content/settings/README.md
 content/themes/**
 !content/themes/casper/**
-content/themes/casper/assets/css/.csscomb.json
-content/themes/casper/.yarnrc
+content/themes/casper/yarn.lock
 node_modules/**
 core/server/lib/members/static/auth/node_modules/**
 **/*.db*
@@ -45,7 +45,6 @@ core/server/lib/members/static/auth/node_modules/**
 core/built/**/*.map
 core/built/**/test-*
 core/built/**/tests-*
-core/admin/**
 test/**
 CONTRIBUTING.md
 content/themes/casper/SECURITY.md
@@ -53,9 +52,8 @@ SECURITY.md
 renovate.json
 *.html
 !core/frontend/src/admin-auth/*.html
+!core/built/admin/**/*.html
 !core/server/views/**
-!core/server/web/admin/views/**
-core/server/web/admin/views/.gitkeep
 !core/server/services/mail/templates/**
 bower_components/**
 .editorconfig

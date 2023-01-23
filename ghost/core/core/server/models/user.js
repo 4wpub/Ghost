@@ -1,7 +1,7 @@
 const _ = require('lodash');
 const Promise = require('bluebird');
 const validator = require('@tryghost/validator');
-const ObjectId = require('bson-objectid');
+const ObjectId = require('bson-objectid').default;
 const ghostBookshelf = require('./base');
 const baseUtils = require('./base/utils');
 const limitService = require('../services/limits');
@@ -57,12 +57,18 @@ User = ghostBookshelf.Model.extend({
 
     tableName: 'users',
 
+    actionsCollectCRUD: true,
+    actionsResourceType: 'user',
+
     defaults: function defaults() {
         return {
             password: security.identifier.uid(50),
             visibility: 'public',
             status: 'active',
-            comment_notifications: true
+            comment_notifications: true,
+            free_member_signup_notification: true,
+            paid_subscription_started_notification: true,
+            paid_subscription_canceled_notification: false
         };
     },
 
@@ -234,7 +240,7 @@ User = ghostBookshelf.Model.extend({
          *   - we do some pre-validation checks, because onValidate is called AFTER onSaving
          *   - when importing, we set the password to a random uid and don't validate, just hash it and lock the user
          *   - when importing with `importPersistUser` we check if the password is a bcrypt hash already and fall back to
-         *     normal behaviour if not (set random password, lock user, and hash password)
+         *     normal behavior if not (set random password, lock user, and hash password)
          *   - no validations should run, when importing
          */
         if (self.hasChanged('password')) {
@@ -242,7 +248,7 @@ User = ghostBookshelf.Model.extend({
 
             // CASE: import with `importPersistUser` should always be an bcrypt password already,
             // and won't re-hash or overwrite it.
-            // In case the password is not bcrypt hashed we fall back to the standard behaviour.
+            // In case the password is not bcrypt hashed we fall back to the standard behavior.
             if (options.importPersistUser && this.get('password').match(/^\$2[ayb]\$.{56}$/i)) {
                 return;
             }
@@ -363,24 +369,6 @@ User = ghostBookshelf.Model.extend({
         delete options.status;
 
         return filter;
-    },
-
-    getAction(event, options) {
-        const actor = this.getActor(options);
-
-        // @NOTE: we ignore internal updates (`options.context.internal`) for now
-        if (!actor) {
-            return;
-        }
-
-        // @TODO: implement context
-        return {
-            event: event,
-            resource_id: this.id || this.previous('id'),
-            resource_type: 'user',
-            actor_id: actor.id,
-            actor_type: actor.type
-        };
     }
 }, {
     orderDefaultOptions: function orderDefaultOptions() {
@@ -424,6 +412,26 @@ User = ghostBookshelf.Model.extend({
         }
 
         return permittedOptionsToReturn;
+    },
+
+    countRelations() {
+        return {
+            posts(modelOrCollection, options) {
+                modelOrCollection.query('columns', 'users.*', (qb) => {
+                    qb.count('posts.id')
+                        .from('posts')
+                        .join('posts_authors', 'posts.id', 'posts_authors.post_id')
+                        .whereRaw('posts_authors.author_id = users.id')
+                        .as('count__posts');
+
+                    if (options.context && options.context.public) {
+                        // @TODO use the filter behavior for posts
+                        qb.andWhere('posts.type', '=', 'post');
+                        qb.andWhere('posts.status', '=', 'published');
+                    }
+                });
+            }
+        };
     },
 
     /**
@@ -478,6 +486,33 @@ User = ghostBookshelf.Model.extend({
         }
 
         return query.fetch(options);
+    },
+
+    /**
+     * Returns users who should receive a specific type of alert
+     * @param {'free-signup'|'paid-started'|'paid-canceled'} type The type of alert to fetch users for
+     * @param {any} options
+     * @return {Promise<[Object]>} Array of users
+     */
+    getEmailAlertUsers(type, options) {
+        options = options || {};
+
+        let filter = 'status:active';
+        if (type === 'free-signup') {
+            filter += '+free_member_signup_notification:true';
+        } else if (type === 'paid-started') {
+            filter += '+paid_subscription_started_notification:true';
+        } else if (type === 'paid-canceled') {
+            filter += '+paid_subscription_canceled_notification:true';
+        }
+        const updatedOptions = _.merge({}, options, {filter, withRelated: ['roles']});
+        return this.findAll(updatedOptions).then((users) => {
+            return users.toJSON().filter((user) => {
+                return user?.roles?.some((role) => {
+                    return ['Owner', 'Administrator'].includes(role.name);
+                });
+            });
+        });
     },
 
     /**
@@ -997,10 +1032,10 @@ User = ghostBookshelf.Model.extend({
         let ownerRole;
         let contextUser;
 
-        return Promise.join(
+        return Promise.all([
             ghostBookshelf.model('Role').findOne({name: 'Owner'}),
             User.findOne({id: options.context.user}, {withRelated: ['roles']})
-        )
+        ])
             .then((results) => {
                 ownerRole = results[0];
                 contextUser = results[1];
@@ -1013,8 +1048,10 @@ User = ghostBookshelf.Model.extend({
                     }));
                 }
 
-                return Promise.join(ghostBookshelf.model('Role').findOne({name: 'Administrator'}),
-                    User.findOne({id: object.id}, {withRelated: ['roles']}));
+                return Promise.all([
+                    ghostBookshelf.model('Role').findOne({name: 'Administrator'}),
+                    User.findOne({id: object.id}, {withRelated: ['roles']})
+                ]);
             })
             .then((results) => {
                 const adminRole = results[0];
@@ -1041,9 +1078,11 @@ User = ghostBookshelf.Model.extend({
                 }
 
                 // convert owner to admin
-                return Promise.join(contextUser.roles().updatePivot({role_id: adminRole.id}),
+                return Promise.all([
+                    contextUser.roles().updatePivot({role_id: adminRole.id}),
                     user.roles().updatePivot({role_id: ownerRole.id}),
-                    user.id);
+                    user.id
+                ]);
             })
             .then((results) => {
                 return Users.forge()

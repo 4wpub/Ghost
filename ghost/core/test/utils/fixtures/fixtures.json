@@ -8,7 +8,10 @@
                     "slug":             "default-product",
                     "type":             "paid",
                     "active":           true,
-                    "visibility":       "public"
+                    "visibility":       "public",
+                    "currency":         "usd",
+                    "monthly_price":    500,
+                    "yearly_price":     5000
                 },
                 {
                     "name":             "Free",
@@ -214,6 +217,11 @@
                 {
                     "name": "Activate themes",
                     "action_type": "activate",
+                    "object_type": "theme"
+                },
+                {
+                    "name": "View active theme details",
+                    "action_type": "readActive",
                     "object_type": "theme"
                 },
                 {
@@ -615,6 +623,16 @@
                     "name": "Report comments",
                     "action_type": "report",
                     "object_type": "comment"
+                },
+                {
+                    "name": "Browse links",
+                    "action_type": "browse",
+                    "object_type": "link"
+                },
+                {
+                    "name": "Edit links",
+                    "action_type": "edit",
+                    "object_type": "link"
                 }
             ]
         },
@@ -625,6 +643,9 @@
                     "id": 1,
                     "name": "Ghost",
                     "email": "ghost@example.com",
+                    "free_member_signup_notification": true,
+                    "paid_subscription_started_notificaton": true,
+                    "paid_subscription_canceled_notification": false,
                     "status": "inactive",
                     "roles": []
                 },
@@ -636,6 +657,9 @@
                     "roles": ["Contributor"],
                     "twitter": "ghost",
                     "facebook": "ghost",
+                    "free_member_signup_notification": true,
+                    "paid_subscription_started_notification": true,
+                    "paid_subscription_canceled_notification": false,
                     "location": "The Internet",
                     "website": "https://ghost.org",
                     "bio": "You can delete this user to remove all the welcome posts",
@@ -845,7 +869,7 @@
                     "slug": "ghost-explore",
                     "name": "Ghost Explore",
                     "description": "Built-in Ghost Explore integration",
-                    "type": "internal",
+                    "type": "core",
                     "api_keys": [{"type": "admin", "role": "Ghost Explore Integration"}]
                 },
                 {
@@ -914,7 +938,8 @@
                     "members_stripe_connect": "auth",
                     "newsletter": "all",
                     "explore": "read",
-                    "comment": "all"
+                    "comment": "all",
+                    "link": "all"
                 },
                 "DB Backup Integration": {
                     "db": "all"
@@ -948,7 +973,8 @@
                     "offer": ["browse", "read", "add", "edit"],
                     "newsletter": ["browse", "read", "add", "edit"],
                     "explore": "read",
-                    "comment": "all"
+                    "comment": "all",
+                    "link": "all"
                 },
                 "Editor": {
                     "notification": "all",
@@ -959,7 +985,7 @@
                     "user": "all",
                     "role": "all",
                     "invite": "all",
-                    "theme": ["browse"],
+                    "theme": ["browse", "readActive"],
                     "email_preview": "all",
                     "email": "all",
                     "snippet": "all",
@@ -974,7 +1000,7 @@
                     "tag": ["browse", "read", "add"],
                     "user": ["browse", "read"],
                     "role": ["browse"],
-                    "theme": ["browse"],
+                    "theme": ["browse", "readActive"],
                     "email_preview": "read",
                     "email": "read",
                     "snippet": ["browse", "read"],
